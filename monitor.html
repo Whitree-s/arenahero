@@ -112,13 +112,13 @@
   .ul-row:hover { background:rgba(255,255,255,0.03); }
   .ul-uid { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums;
     font-family:"SF Mono",Menlo,Consolas,monospace; }
-  /* HP 条：绿色渐变条 */
-  .hp-bar { height:7px; background:rgba(255,255,255,0.08); border-radius:3px;
-    overflow:hidden; min-width:40px; max-width:80px; }
-  .hp-fill { height:100%; border-radius:3px; background:linear-gradient(90deg,#39d98a,#2ee6c9);
-    transition:width .15s; }
-  .hp-fill.low { background:linear-gradient(90deg,#ff4d5e,#ff8a3d); }
-  .hp-fill.mid { background:linear-gradient(90deg,#ffb24d,#ffe14c); }
+  /* HP 条：确保颜色填充可见 */
+  .hp-bar { height:8px; background:rgba(255,255,255,0.1); border-radius:4px;
+    overflow:hidden; min-width:50px; max-width:80px; position:relative; }
+  .hp-fill { height:100%; border-radius:4px; min-width:2px;
+    background:#39d98a; transition:width .15s; }
+  .hp-fill.low { background:#ff4d5e; }
+  .hp-fill.mid { background:#ffb24d; }
   /* 动作标签 */
   .ul-tag { font-size:10px; font-weight:700; color:#04121f; padding:1px 6px;
     border-radius:3px; white-space:nowrap; }
@@ -862,7 +862,7 @@ function renderUnitList(t){
     html += `<div class="ul-section">
       <div class="ul-head ${expanded?'':'collapsed'}" onclick="_ulToggle('${type}',this)">
         ${ICONS[type]}<span class="name">${name}</span>
-        <span class="count">×</${list.length}</span>
+        <span class="count">${list.length}</span>
         <span class="chev">▾</span></div>
       <div class="ul-body ${expanded?'':'hidden'}">`;
     list.forEach(u=>{
