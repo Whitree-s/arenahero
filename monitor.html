@@ -866,7 +866,9 @@ function renderUnitList(t){
         <span class="chev">▾</span></div>
       <div class="ul-body ${expanded?'':'hidden'}">`;
     list.forEach(u=>{
-      const uid = u.id||u.uid||"?";
+      const rawUid = u.id||u.uid||"?";
+      // 只显示后4位（UUID太长）
+      const uid = rawUid.length > 4 ? "…"+rawUid.slice(-4) : rawUid;
       const hp = u.hp||0;
       const maxHp = u.max_hp||5; // 默认最大 HP
       const pos = u.pos||[0,0];
@@ -874,12 +876,12 @@ function renderUnitList(t){
       const cargo = u.cargo || 0;
       // 工人显示载货量，战斗单位显示动作标签
       const displayTag = type==="WORKER"
-        ? (cargo > 0 ? `载${cargo}` : (tag||"—"))
+        ? (cargo > 0 ? `运载${cargo}` : (tag||"—"))
         : (tag||"—");
       const tagCol = type==="WORKER" && cargo > 0 ? "#39d98a" : tagColor(u.tag);
       html += `<div class="ul-row">
         <span class="ul-uid">${uid}</span>
-        <span class="hp-bar"><span class="hp-fill ${hpClass(hp,maxHp)}" style="width:${Math.max(0,(hp/maxHp)*100)}%"></span></span>
+        <span class="hp-bar" style="min-width:48px"><span class="hp-fill ${hpClass(hp,maxHp)}" style="width:${Math.max(2,(hp/maxHp)*100)}%"></span></span>
         <span class="ul-tag" style="background:${tagCol};color:#04121f">${displayTag}</span>
         <span class="ul-pos">[${pos[0]},${pos[1]}]</span></div>`;
     });
