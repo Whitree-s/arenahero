@@ -70,7 +70,7 @@ COMBAT_EXPLORE_GOAL_TTL = 80
 # A visible attacker can disappear for a Tick as units move in and out of
 # vision.  Keep the defensive posture long enough to avoid alternating between
 # returning home and chasing the same force.
-SIEGE_HOLD_TICKS = 30
+SIEGE_HOLD_TICKS = 6          # 仅吸收单次视野闪烁；不再用长窗口把全队锁在回防
 SIEGE_WORKER_BLOCKERS = 3
 
 # Workers only see three cells by themselves.  Without a short hold they flee
@@ -629,9 +629,9 @@ class HeuristicStrategy(Strategy):
             d_enemy = None
 
         # 防御状态：**可见敌方战斗单位**接近 Core 才触发（敌方 worker 无
-        # 攻击力，只是来采资源/路过——不触发造兵防御，否则 3 个敌方 worker
-        # 路过会把 Core 资源全拿去造 Ranger，经济停摆）。敌方 Core 也算
-        # 威胁（会生产兵力）。记忆敌人不触发（类型未知 + 可能已过时）。
+        # 攻击力，只是来采资源/路过——不触发；敌方 Core 也不触发龟缩——
+        # 它不攻击，只会在靠近后产兵，正常生产逻辑已持续造战斗单位应对）。
+        # 记忆敌人不触发（类型未知 + 可能已过时）。
         danger_targets = []
         if core_pos:
             for e in obs.enemies:
@@ -639,17 +639,18 @@ class HeuristicStrategy(Strategy):
                     continue
                 if self._dist(e["pos"], core_pos) <= g["defense_radius"]:
                     danger_targets.append((tuple(e["pos"]), e["utype"]))
-            for c in obs.enemy_cores:
-                if self._dist(c["pos"], core_pos) <= g["defense_radius"]:
-                    danger_targets.append((tuple(c["pos"]), "CORE"))
         danger_points = [target[0] for target in danger_targets]
         core_was_hit = any(ev.get("type") == "CORE_DAMAGED"
                            for ev in (obs.prev_events or ()))
         was_siege = self._siege_active
+        # 仅在「当前」有敌人逼近 Core 或 Core 本 tick 被击中时才进入防御；
+        # 短窗口(SIEGE_HOLD_TICKS)仅吸收单次视野闪烁，避免一帧丢失就反复
+        # 进出防御导致任务被清空。不再用长窗口把全队锁在回防状态——这正是
+        # 「明明人多却一直回防、被逐个击破」的根因：一个敌方侦察兵晃过
+        # Core 10 格内，全队龟缩 30 tick，敌方主力趁我方散开逐个击破。
         if danger_points or core_was_hit:
-            self._siege_until = max(self._siege_until,
-                                    obs.tick + SIEGE_HOLD_TICKS)
-        self._siege_active = bool(core_pos and obs.tick < self._siege_until)
+            self._siege_until = obs.tick + SIEGE_HOLD_TICKS
+        self._siege_active = bool(core_pos and obs.tick <= self._siege_until)
         defense = self._siege_active
         self._nearby_enemy_fighters = len(danger_points)
         nearest_defense = (min(
@@ -659,6 +660,13 @@ class HeuristicStrategy(Strategy):
         self._defense_type = nearest_defense[1] if nearest_defense else None
         self._nearby_enemy_rangers = sum(
             1 for _pos, utype in danger_targets if utype == "RANGER")
+        # 局部优势判定：入侵点附近「我方战力 / 敌方战力」。若我方占优
+        # （<1），则转守为攻、全体压上消灭入侵者，而不是龟缩回 Core。
+        self._defense_aggressive = False
+        if defense and self._defense_point is not None and core_pos:
+            local_threat = self._local_threat_ratio(
+                obs, core_pos, self._defense_point)
+            self._defense_aggressive = local_threat < 1.0
         self._siege_vanguards = set()
         self._siege_rangers = set()
         if self._defense_point is not None \
@@ -932,6 +940,29 @@ class HeuristicStrategy(Strategy):
             weight = 0.75 if core_pos and self._dist(pos, core_pos) \
                 <= self.genes["defense_radius"] else 0.5
             theirs += max(0.0, float(durability)) * weight
+        return theirs / max(1.0, ours)
+
+    def _local_threat_ratio(self, obs, core_pos, point):
+        """局部战力比：以 point(入侵点)为中心、defense_radius 为半径内，
+        敌方战斗单位战力 / 我方战斗单位战力。用于判断「上门的入侵者」是否
+        值得龟缩回防还是直接反推。
+        """
+        def value(utype, hp):
+            return max(0.0, float(hp)) * (1.25 if utype == "VANGUARD" else 1.0)
+
+        R = self.genes["defense_radius"]
+        ours = 0.0
+        for u in obs.units:
+            if u["utype"] == "WORKER":
+                continue
+            if core_pos and self._dist(u["pos"], point) <= R:
+                ours += value(u["utype"], u["hp"])
+        theirs = 0.0
+        for e in getattr(obs, "enemies", []):
+            if e["utype"] == "WORKER":
+                continue
+            if self._dist(e["pos"], point) <= R:
+                theirs += value(e["utype"], e["hp"])
         return theirs / max(1.0, ours)
 
     def _fighter_spawn_order(self, obs):
@@ -1750,9 +1781,26 @@ class HeuristicStrategy(Strategy):
         # visible fighter while the rest keep the inner ring.  The old posture
         # held every defender at Core, allowing a lone Ranger to shoot Workers
         # indefinitely from outside SWEEP range.
-        if defense and core_pos:
-            if uid in self._siege_vanguards \
-                    and self._defense_point is not None:
+        if defense and core_pos and self._defense_point is not None:
+            # 局部占优：转守为攻，全体压上消灭入侵者，而非龟缩回 Core。
+            # 这正是「己方人多却一直回防、被逐个击破」的修复点。
+            if self._defense_aggressive:
+                adj = [e for e in enemies if self._dist(pos, e[0]) == 1]
+                if adj:
+                    target = min(adj, key=lambda e: (e[2] == "WORKER", e[1],
+                                                     self._uid_num(e[3])))
+                    self._dbg(uid, "sweep", target[0])
+                    return ("SWEEP", {"direction": dir_name(
+                        target[0][0] - pos[0], target[0][1] - pos[1])})
+                step = self.pf.next_step(pos, self._defense_point)
+                if step and self._projected_occupancy(step, obs) < 2:
+                    self._dbg(uid, "siege_advance_vanguard", self._defense_point)
+                    return ("MOVE", {"direction": dir_name(
+                        step[0] - pos[0], step[1] - pos[1])})
+                self._dbg(uid, "siege_advance_vanguard", self._defense_point)
+                return None
+            # 局部劣势/势均力敌不足：仅 2 名截击者迎敌，其余回防守 Core
+            if uid in self._siege_vanguards:
                 target = self._defense_point
                 step = self.pf.next_step(pos, target)
                 if step and self._projected_occupancy(step, obs) < 2:
@@ -1982,9 +2030,22 @@ class HeuristicStrategy(Strategy):
         # Limited counterattack: selected Rangers take a legal firing cell for
         # the visible attacker.  Everyone else keeps the five-cell home ring,
         # preventing one target from pulling the entire defense away.
-        if defense and core_pos:
-            if uid in self._siege_rangers \
-                    and self._defense_point is not None:
+        if defense and core_pos and self._defense_point is not None:
+            # 局部占优：游侠推进到射击位反推，而非回防。
+            if self._defense_aggressive:
+                action = self._ranger_firing_position(
+                    u, obs, self._defense_point, "siege_advance_ranger")
+                if action:
+                    return action
+                step = self.pf.next_step(pos, self._defense_point)
+                if step:
+                    self._dbg(uid, "siege_advance_ranger", self._defense_point)
+                    return ("MOVE", {"direction": dir_name(
+                        step[0] - pos[0], step[1] - pos[1])})
+                self._dbg(uid, "siege_advance_ranger", self._defense_point)
+                return None
+            # 局部劣势：仅 3 名游侠占射位，其余回防
+            if uid in self._siege_rangers:
                 action = self._ranger_firing_position(
                     u, obs, self._defense_point, "siege_ranger")
                 if action:
