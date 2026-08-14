@@ -536,7 +536,8 @@ class StreamWriter:
         except Exception:
             pass
 
-        # 3) 合并：union（只增不减）
+        # 3) 合并：explored/obstacles 做 union（只增不减）；resource_memory 做增量合并
+        #    + 视野反证清理（当前视野覆盖的格若不在 cur_res 中 → 资源已被采空/消失，从记忆删除）
         merged_exp = prev_exp | cur_exp
         merged_obs = prev_obs | cur_obs
         merged_res = {**prev_res}
@@ -544,6 +545,12 @@ class StreamWriter:
             key = (pos[0], pos[1]) if isinstance(pos, (list, tuple)) else pos
             if key not in merged_res or tick > merged_res[key]:
                 merged_res[key] = tick
+        # 视野反证：当前探索到的格(cur_exp)中，如果不再被策略记为资源(cur_res)，
+        # 说明该位置资源已被采完或消失 → 从持久化记忆中清除，避免地图上显示幽灵资源
+        if cur_exp:
+            expired = [k for k in merged_res if k in cur_exp and k not in cur_res]
+            for k in expired:
+                del merged_res[k]
 
         snap = {
             "tick": frame["tick"],

@@ -500,11 +500,18 @@ function draw(){
   }
   // 记忆资源：已探索并持久化、但当前不在视野内的资源（蓝钻，格子内、带白边）。
   // 后端 MapMemory.resource_memory 在看到资源时写入 map.json、采完/到访无资源时清除。
+  // 前端防御过滤：只渲染位于 explored_cells 内的记忆资源（避免未探索区出现幽灵图标）。
   if(document.getElementById("showMemRes").checked && MAPBASE && MAPBASE.resource_memory){
     const live = new Set((t.resources_cells||[]).map(p=>p[0]+","+p[1]));
+    // 构建 explored_cells 快速查找集（迷雾开启时才有意义）
+    const fogOn = document.getElementById("showExplored").checked;
+    const exploredSet = (fogOn && MAPBASE.explored_cells)
+      ? new Set(MAPBASE.explored_cells.map(p=>p[0]+","+p[1])) : null;
     MAPBASE.resource_memory.forEach(r=>{
       const key=r[0]+","+r[1];
       if(live.has(key)) return;            // 当前可见的用绿点画了，避免重叠
+      // 防御性过滤：不在已探索区域内的记忆资源不渲染（数据残留兜底）
+      if(exploredSet && !exploredSet.has(key)) return;
       const x=sx(r[0])+v/2, y=sy(r[1])+v/2, s=Math.max(2.5, v*0.4);
       ctx.fillStyle="rgba(57,217,138,0.95)";   // 记忆资源也用绿色（空心菱形，区别于当前视野的实心绿点）
       ctx.beginPath(); ctx.moveTo(x,y-s); ctx.lineTo(x+s,y); ctx.lineTo(x,y+s); ctx.lineTo(x-s,y); ctx.closePath(); ctx.fill();
