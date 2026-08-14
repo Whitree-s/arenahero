@@ -475,6 +475,7 @@ class HeuristicStrategy(Strategy):
         self._shot_modes = {}
         self._planned_departures = {}
         self._planned_arrivals = {}
+        self._intended_dest = {}       # uid -> 本 tick 计划目的地（合体同步移动用）
         # 资源任务必须足够长，才能覆盖策略允许的 60 格采集半径。仅在 Worker
         # 已载货、目标已被视野反证或超过任务 TTL 时释放，避免每 12 Tick
         # 重分配一次导致远途 Worker 改道和 A* 首步振荡。
@@ -570,6 +571,24 @@ class HeuristicStrategy(Strategy):
             p = tuple(uu["pos"])
             cells[p] = cells.get(p, 0) + 1
         self._full_cells = {c for c, n in cells.items() if n >= 2}
+        # 战斗组配对（VANGUARD + RANGER 同格）=「合体」：用于合体后同步移动，
+        # 避免"先锋先动一步、游侠滞后一步"的串行现象（见 _apply_group_sync）。
+        self._combat_pairs = {}   # cell -> (vanguard_uid, ranger_uid)
+        self._pair_of = {}        # uid -> 共享 cell
+        _occ = {}                 # cell -> (utype, uid)，同格异种即成一对
+        for uu in obs.units:
+            if uu["utype"] not in ("VANGUARD", "RANGER"):
+                continue
+            p = tuple(uu["pos"])
+            prev = _occ.get(p)
+            if prev is not None and prev[0] != uu["utype"]:
+                v_uid = uu["uid"] if uu["utype"] == "VANGUARD" else prev[1]
+                r_uid = prev[1] if uu["utype"] == "VANGUARD" else uu["uid"]
+                self._combat_pairs[p] = (v_uid, r_uid)
+                self._pair_of[v_uid] = p
+                self._pair_of[r_uid] = p
+            else:
+                _occ[p] = (uu["utype"], uu["uid"])
         # Core 口袋：曼哈顿环跨墙选点会把守家单位丢到墙外/不可达格
         # （线上见过 Vanguard 站在 BFS 不可达格）。BFS 只按记忆地形障碍
         # 约束、无视满格（满格是单位占用，不是地形），供守家/驻留/巡逻
@@ -808,6 +827,9 @@ class HeuristicStrategy(Strategy):
                                     all_threats, visible_enemies, visible_cores,
                                     bpos, defense)
             if act is not None:
+                # 合体同步：先锋/游侠同格且本 tick 要去同一格(互堵)时，
+                # 把后处理的一方改到伙伴目的地旁的空位，二者同 tick 各动一步。
+                act = self._apply_group_sync(u, tuple(u["pos"]), act, obs)
                 plan["units"][u["uid"]] = act
                 if act[0] == "MOVE":
                     dx, dy = {
@@ -816,6 +838,7 @@ class HeuristicStrategy(Strategy):
                     }[act[1]["direction"]]
                     origin = tuple(u["pos"])
                     destination = (origin[0] + dx, origin[1] + dy)
+                    self._intended_dest[u["uid"]] = destination
                     self._planned_departures[origin] = (
                         self._planned_departures.get(origin, 0) + 1)
                     self._planned_arrivals[destination] = (
@@ -1157,6 +1180,51 @@ class HeuristicStrategy(Strategy):
                                          enemies, enemy_cores, bpos, defense)
         return self._decide_ranger(u, obs, core_pos, threat, d_enemy,
                                    enemies, enemy_cores, bpos, defense)
+
+    # ------------------------------------------------------------------
+    # 合体同步移动：先锋/游侠同格(战斗组)时，避免一先一后串行
+    # ------------------------------------------------------------------
+    def _apply_group_sync(self, u, pos, act, obs):
+        """战斗组(V+R 同格)同步移动。
+
+        同格两单位若本 tick 都算出了同一个目的地(先锋先动、游侠被引擎挡下
+        再滞后一步)，则把后处理的一方改到伙伴目的地旁的空位，二者同 tick 各
+        走一步、保持编队，消除"先锋动一步、游侠跟一步"的串行滞后。"""
+        partner_uid = self._pair_of.get(u["uid"])
+        if partner_uid is None or act is None or act[0] != "MOVE":
+            return act
+        dvec = {"UP": (0, -1), "DOWN": (0, 1),
+                "LEFT": (-1, 0), "RIGHT": (1, 0)}[act[1]["direction"]]
+        dest = (pos[0] + dvec[0], pos[1] + dvec[1])
+        pdest = self._intended_dest.get(partner_uid)
+        if pdest is None or pdest != dest:
+            return act  # 伙伴未处理或目的地不同 → 不冲突，原样移动
+        alt = self._group_alt_step(pos, dest, obs)
+        if alt is None:
+            return act  # 旁边无空位 → 兜底原样(罕见)
+        adx, ady = alt[0] - pos[0], alt[1] - pos[1]
+        return ("MOVE", {"direction": dir_name(adx, ady)})
+
+    def _group_alt_step(self, pos, goal, obs):
+        """在 pos 的 4 邻格里挑一个：空位、非伙伴目的地 goal、且离 goal 最近
+        （即仍朝共同目标推进、仅错开一格保持编队）。无合适格返回 None。"""
+        occ = {tuple(u["pos"]) for u in obs.units}
+        occ.discard(tuple(pos))  # 自己当前格本 tick 离开，不算障碍
+        best = None
+        best_d = None
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            c = (pos[0] + dx, pos[1] + dy)
+            if self._is_obstacle(*c):
+                continue
+            if c in occ:
+                continue
+            if c == goal:
+                continue  # 不与先锋抢同一格
+            d = self._dist(c, goal)
+            if best_d is None or d < best_d:
+                best_d = d
+                best = c
+        return best
 
     # ------------------------------------------------------------------
     # Worker

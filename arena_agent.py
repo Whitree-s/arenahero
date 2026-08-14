@@ -97,6 +97,7 @@ COLLECT_ASSIGN_MAX = int(os.environ.get("AH_COLLECT_ASSIGN_MAX", "400"))  # 全�
 EXPLORER_BASE_RADIUS = int(os.environ.get("AH_EXPLORER_BASE_RADIUS", "20"))      # 基础探索半径
 EXPLORER_RADIUS_PER_UNIT = int(os.environ.get("AH_EXPLORER_RADIUS_PER_UNIT", "2"))  # 每多一个单位半径+多少
 EXPLORER_MAX_RADIUS = int(os.environ.get("AH_EXPLORER_MAX_RADIUS", "60"))       # 半径上限
+EXPLORER_HOME_RADIUS = int(os.environ.get("AH_EXPLORER_HOME_RADIUS", "40"))    # 离家硬围栏：工人离 Core 超过此值改回撤(默认40)
 SCOUT_HANDOFF_MAX_DIST = int(os.environ.get("AH_SCOUT_HANDOFF_MAX_DIST", "60"))  # 角色交接：派遣最近的 B 接手探索的最大距离
 SCOUT_COMPASS = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]  # 8 罗盘方向(顺时针)
 # 事件日志（供可视化 UI 回放；设为空字符串可关闭）
@@ -1064,6 +1065,25 @@ def _plan_directional_explore(ws: WorkerState, w, pos: Position,
     radius = min(EXPLORER_MAX_RADIUS,
                  EXPLORER_BASE_RADIUS + EXPLORER_RADIUS_PER_UNIT * num_units)
     avoid_radius = _avoid_radius(map_mem, num_units)
+    # 离家硬围栏：工人离 Core 超过阈值 → 先回撤，不再向外派腿。
+    # 旧决策探索是"从当前位置接力外扩"，本无离家上限；此围栏把最远离家
+    # 距离锁死在 EXPLORER_HOME_RADIUS 内（类似新决策的 idle_explore_radius）。
+    if core_pos and manhattan(pos, core_pos) > EXPLORER_HOME_RADIUS:
+        # 清掉旧的外扩腿目标，回撤到家内再重新探索（避免出界/入界反复横跳）
+        ws.scout_target = None
+        ws.scout_heading = None
+        ws.scout_origin = None
+        d = worker_step(pos, core_pos, blocked)
+        if d:
+            _mv(w, d)
+            ws.target = core_pos
+            ws.last_pos = tuple(pos)
+            return
+        # 朝家无路（被障碍/单位堵）：重选航向破局（沿用卡死保护思路）
+        _scout_rechoose(ws, w, pos, radius, workers, map_mem, avoid_radius,
+                        worker_states, blocked)
+        ws.last_pos = tuple(pos)
+        return
     # 卡死检测：用上一 tick 记录的位置判断本 tick 是否真的移动了
     if ws.last_pos is not None and ws.last_pos == tuple(pos):
         ws.stuck_ticks += 1

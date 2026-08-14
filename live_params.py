@@ -31,6 +31,7 @@ SPECS = {
         "explorer_base_radius": (5.0, 40.0),   # 旧决策：基础探索半径（默认20）
         "explorer_max_radius": (10.0, 80.0),   # 旧决策：探索半径上限（默认60）
         "explorer_radius_per_unit": (0.0, 5.0), # 旧决策：每单位增加半径（默认2）
+        "explorer_home_radius": (10.0, 80.0),  # 旧决策：探索离家硬围栏（默认40）
     },
 }
 
@@ -49,6 +50,7 @@ DEFAULTS = {
         "explorer_base_radius": 20.0,
         "explorer_max_radius": 60.0,
         "explorer_radius_per_unit": 2.0,
+        "explorer_home_radius": 40.0,
     },
 }
 
