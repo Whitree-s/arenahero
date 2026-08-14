@@ -408,35 +408,47 @@ class MapMemory:
             self.last_core = tuple(turn.core.position)
         # 障碍永远累加（不会消失）
         self.obstacles.update(turn.obstacle_cells)
-        # 资源：当前可见的刷新时间戳
-        visible_resources = turn.resource_cells
-        # 先标记所有当前可见的资源为"本 Tick 看到"
-        for p in visible_resources:
-            self.resource_memory[p] = turn.tick
-        # 记录探索到的区域。关键：必须铺成"视野圆盘"——每个我方单位/Core 周围
-        # 半径内的所有格子都算已探索，而不只是恰好有地形的格。否则已探索区会变成
-        # 稀疏的地形点（看起来像"只有当前视野内"），而非连续的区域。
-        #   - explored_cells：逐格(1×1)精确记录，用于战争迷雾精准描绘（走廊=走廊）；
-        #   - explored_sectors：32×32 区块，仅供 AI 探索前沿/游走规划使用。
+
+        # ---- 先收集本 tick 所有"被照亮"的格子（用于资源过期检测）----
+        _this_vision: set[Position] = set()
         def _mark_vision(center, radius):
             cx, cy = center
             for dx in range(-radius, radius + 1):
                 for dy in range(-radius, radius + 1):
                     if abs(dx) + abs(dy) <= radius:
-                        self._add_explored((cx + dx, cy + dy))
+                        cell = (cx + dx, cy + dy)
+                        _this_vision.add(cell)
+                        self._add_explored(cell)
 
         for u in getattr(turn, "units", ()):  # 每个我方单位照亮周围一圈
             p = tuple(u.position)
+            _this_vision.add(p)
             self._add_explored(p)             # 单位脚下格（地形 batch 可能不含空格）
             _mark_vision(p, VISION_RADIUS.get(u.unit_type, 3))
         if turn.core is not None:
             p = tuple(turn.core.position)
+            _this_vision.add(p)
             self._add_explored(p)
             _mark_vision(p, CORE_VISION)
         # 地形 batch：补充登记（含障碍/资源所在格，部分可能落在视野边缘外）
         for obj in turn.terrain:
             for p in obj.positions:
                 self._add_explored(tuple(p))
+
+        # ---- 资源记忆更新 ----
+        visible_resources = turn.resource_cells
+        visible_res_set = set(visible_resources)
+        # 当前可见的资源 → 刷新时间戳
+        for p in visible_resources:
+            self.resource_memory[p] = turn.tick
+        # 清除"记得有资源但本 Tick 视野内已确认无资源"的脏数据。
+        # 这修复了资源被采走/耗尽后地图上仍显示绿色菱形的问题——
+        # 不需要等工人亲自走到那格才清除，视野覆盖即足够验证。
+        if _this_vision:
+            stale = [p for p in self.resource_memory
+                     if p in _this_vision and p not in visible_res_set]
+            for p in stale:
+                self.resource_memory.pop(p, None)
 
     def get_known_resources(self, current_tick: int,
                             max_age: int = 24) -> set[Position]:
