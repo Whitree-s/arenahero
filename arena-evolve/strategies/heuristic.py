@@ -132,6 +132,8 @@ GENES = [
     # ---- v5 新增：idle 探索范围（网页实时可调，见 live_params.py）----
     ("idle_explore_radius", 15.0, 0.0,  60.0),  # 空闲战斗单位探索离 Core 上限（0=只巡逻不远征）
     ("scout_search_limit",  40.0, 10.0, 80.0),  # _nearest_unvisited 搜索半径（探索彻底度）
+    # ---- v6 新增：主动出击（兵力占优时寻敌接战，避免龟缩在家被抓单）----
+    ("march_trigger",       2.0,  1.2, 4.0),    # 兵力≥此倍敌方时主动出击(越低越激进)
 ]
 
 
@@ -705,6 +707,36 @@ class HeuristicStrategy(Strategy):
         # 友军受援：检测低血/被攻击的队友，指派附近健康单位去掩护
         # （无论威胁比例高低都生效——劣势时更需要支援）
         self._plan_support(obs, core_pos)
+
+        # 主动出击：兵力占优(≥march_trigger 倍敌方)时向已知敌人位置进军寻敌，
+        # 而非龟缩在家让敌方抓单逐个击破——这正是「双倍单位去锁定敌方」的全局
+        # 姿态。仅在非守家/非守库时触发；可见战斗单位、记忆敌人、敌方 Core 都
+        # 算目标，最近者优先。留守/巡逻单位不参与(由单位决策排除)。
+        self._march_target = None
+        self._march_target_uid = None
+        self._march_active = False
+        if not defense and not vault_now and core_pos:
+            our_fighters = sum(1 for u in obs.units
+                               if u["utype"] in ("VANGUARD", "RANGER"))
+            vis_fighters = [e for e in obs.enemies
+                            if e["utype"] in ("VANGUARD", "RANGER")]
+            # 敌方兵力估计：可见战斗单位 与 记忆敌人 取大（记忆可能含 Worker，
+            # 偏保守——高估敌方会让出击门槛更高，不会误激进入）
+            enemy_est = max(len(vis_fighters),
+                            len(getattr(self.mem, "last_enemy_pos", {})))
+            if our_fighters >= 2 and enemy_est >= 1 \
+                    and our_fighters >= g["march_trigger"] * enemy_est:
+                cands = [(tuple(e["pos"]), e["uid"]) for e in vis_fighters]
+                for k, info in getattr(self.mem, "last_enemy_pos", {}).items():
+                    cands.append((tuple(info[0]), k))
+                for ec in getattr(obs, "enemy_cores", []):
+                    cands.append((tuple(ec["pos"]), None))
+                if cands:
+                    nearest = min(cands,
+                                  key=lambda c: self._dist(c[0], core_pos))
+                    self._march_target = nearest[0]
+                    self._march_target_uid = nearest[1]
+                    self._march_active = True
 
         # 巡逻 Ranger 分配：永久守家 Ranger 优先，再补到两个近家巡逻位。
         rangers = sorted([u["uid"] for u in obs.units if u["utype"] == "RANGER"])
@@ -1833,6 +1865,23 @@ class HeuristicStrategy(Strategy):
         sa = self._support_action(u, obs, core_pos)
         if sa is not None:
             return sa
+        # 主动出击：兵力占优且无当前交战簇时，向已知敌人进军寻敌接触，而非
+        # 龟缩在家让敌方抓单逐个击破。用拦截预判抄近道截住直线移动者，而非
+        # 追当前格被放风筝。留守 Vanguard 不参与(由上方 home_vanguard 分支拦截)。
+        if self._march_active and self._march_target is not None \
+                and uid not in self._home_vanguards:
+            tgt = self._march_target
+            if self._march_target_uid is not None:
+                live = next((tuple(e["pos"]) for e in obs.enemies
+                             if e["uid"] == self._march_target_uid), None)
+                if live is not None:
+                    tgt = live
+            ip = self._march_intercept(pos, tgt, obs)
+            step = self.pf.next_step(pos, ip)
+            if step and self._projected_occupancy(step, obs) < 2:
+                self._dbg(uid, "march", tgt)
+                return ("MOVE", {"direction": dir_name(
+                    step[0] - pos[0], step[1] - pos[1])})
         # 无进攻计划（无可见敌方集群）时才走旧追击逻辑兜底
         if not self._combat_clusters:
             target, mem_key = self._select_combat_target(pos, enemies,
@@ -1950,6 +1999,22 @@ class HeuristicStrategy(Strategy):
         sa = self._support_action(u, obs, core_pos)
         if sa is not None:
             return sa
+        # 主动出击：同 Vanguard——兵力占优时进军寻敌接触（留守/巡逻 Ranger 除外）。
+        if self._march_active and self._march_target is not None \
+                and uid not in self._home_rangers \
+                and uid not in self._patrol_rangers:
+            tgt = self._march_target
+            if self._march_target_uid is not None:
+                live = next((tuple(e["pos"]) for e in obs.enemies
+                             if e["uid"] == self._march_target_uid), None)
+                if live is not None:
+                    tgt = live
+            ip = self._march_intercept(pos, tgt, obs)
+            step = self.pf.next_step(pos, ip)
+            if step and self._projected_occupancy(step, obs) < 2:
+                self._dbg(uid, "march", tgt)
+                return ("MOVE", {"direction": dir_name(
+                    step[0] - pos[0], step[1] - pos[1])})
         # An unsupported 2 HP Ranger should not accept a stationary ranged
         # trade far from the squad.  Step out of the firing line, then re-engage
         # once support arrives or the enemy follows into a worse position.
@@ -2354,6 +2419,23 @@ class HeuristicStrategy(Strategy):
             if my_d <= en_d + 1:
                 return ip
         return enemy_pos
+
+    def _march_intercept(self, pos, tgt, obs):
+        """进军拦截：目标是持续直线移动的可见敌人时，抄近道截其前方(k=2)，
+        否则返回目标当前位置（同速追击/静态 Core）。把原本闲置的 _intercept_point
+        接进实际移动，让部队「预判」敌人走位而非追尾巴（放风筝）。"""
+        if self._march_target_uid is not None:
+            live = next((e for e in obs.enemies
+                         if e["uid"] == self._march_target_uid), None)
+            if live is not None:
+                prev = self.mem.enemy_prev.get(self._march_target_uid)
+                if prev is not None:
+                    dx = live["pos"][0] - prev[0]
+                    dy = live["pos"][1] - prev[1]
+                    if abs(dx) + abs(dy) == 1:
+                        return self._intercept_point(
+                            pos, tuple(live["pos"]), (dx, dy))
+        return tgt
 
     def _select_combat_target(self, pos, enemies, enemy_cores, obs):
         """带认领的战斗目标选择：可见敌人（认领上限 2，近战+远程围攻合理）
