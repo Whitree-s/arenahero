@@ -652,7 +652,11 @@ class HeuristicStrategy(Strategy):
         # Core 10 格内，全队龟缩 30 tick，敌方主力趁我方散开逐个击破。
         if danger_points or core_was_hit:
             self._siege_until = obs.tick + SIEGE_HOLD_TICKS
-        self._siege_active = bool(core_pos and obs.tick <= self._siege_until)
+        # 守家状态 = 当前有威胁（无敌方战斗单位逼近 / Core 本 tick 被击中）。
+        # 不再靠计时器锁住状态——敌人全灭后应立即解除「回防」，否则用户手动
+        # 清场后部队仍持续显示回防标签、不出击/不探索。SIEGE_HOLD_TICKS 现在
+        # 仅作为「防反复进出清任务」的冷却窗（见下方入口守卫），不延长守家。
+        self._siege_active = bool(core_pos and (danger_points or core_was_hit))
         defense = self._siege_active
         self._nearby_enemy_fighters = len(danger_points)
         nearest_defense = (min(
@@ -686,14 +690,18 @@ class HeuristicStrategy(Strategy):
             self._siege_vanguards = {u["uid"] for u in vanguards[:2]}
             self._siege_rangers = {u["uid"] for u in rangers[:3]}
         if defense and not was_siege:
-            # Entering a siege invalidates every outward combat/exploration
-            # task.  Otherwise a one-Tick visibility gap can revive a stale
-            # pursuit before the unit has actually returned home.
-            self._pursuing.clear()
-            self._explore_goal.clear()
-            self._explore_path.clear()
-            self._raid_point = None
-            self._revisit_goal = None
+            # 冷却守卫：退出守家后 SIEGE_HOLD_TICKS 内不再重复清任务——防止
+            # 敌人在防御半径边缘视野闪烁时每奇数 tick 都清一次追击/探索目标
+            # （旧逻辑靠计时器锁住 defense 本身来避免此问题；现在 defense
+            #  随威胁实时开关，改用冷却窗保护任务）。
+            last_clear = getattr(self, "_last_siege_clear_tick", -999)
+            if obs.tick - last_clear >= SIEGE_HOLD_TICKS:
+                self._pursuing.clear()
+                self._explore_goal.clear()
+                self._explore_path.clear()
+                self._raid_point = None
+                self._revisit_goal = None
+                self._last_siege_clear_tick = obs.tick
 
         # 进攻目标：最近的未遗忘敌人（core 优先）
         self._attack_point = None if vault_now or defense \
