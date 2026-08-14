@@ -965,13 +965,17 @@ def _bearing_unexplored_fraction(pos: Position, heading: tuple[int, int],
 def _choose_scout_heading(pos: Position, w, workers, map_mem: MapMemory,
                           base_idx: int, avoid_radius: int,
                           worker_states, blocked: Optional[set] = None,
-                          exclude: Optional[tuple] = None) -> tuple[int, int]:
+                          exclude: Optional[tuple] = None,
+                          prev_heading: Optional[tuple] = None,
+                          toward_core: Optional[Position] = None) -> tuple[int, int]:
     """选一条"别跟别的工人撞、尽量朝暗区、且不朝死胡同(相邻格是障碍)"的航向。
 
     评分 = 拥堵(身边前向半圆内别人)×3 + (1-未探索占比)×1 + 离基础航向角差×0.15
            + 身边低索引已用同向×6（强制避让）
            + 相邻格是障碍(死胡同)×5（朝墙走必卡，重罚）
-           + 与 exclude 同向×8（卡住换航向时绝不重选刚卡住的那个方向）。
+           + 与 exclude 同向×8（卡住换航向时绝不重选刚卡住的那个方向）
+           + 航向动量偏差×2（rechoose 时偏好与上一航向相近的方向，防跨地图跳目标）
+           + 远离Core惩罚×4（围栏超限时传入 toward_core，惩罚远离Core的航向）。
     """
     others = [ww.position for ww in workers if ww.id != w.id]
     used = _nearby_lower_used_headings(w, pos, workers, worker_states, avoid_radius)
@@ -1001,7 +1005,36 @@ def _choose_scout_heading(pos: Position, w, workers, map_mem: MapMemory,
             if nc in blocked:
                 block_pen = 5.0
         exc_pen = 8.0 if (exclude is not None and h == exclude) else 0.0
-        score = cong * 3.0 + (1 - unexp) * 1.0 + ang_diff * 0.15 + used_pen + block_pen + exc_pen
+        # 航向动量：rechoose 时偏好与上一航向相近的方向（±90°内无惩罚，
+        # ±135°轻惩罚，反向重惩罚），防止跨地图跳目标
+        mom_pen = 0.0
+        if prev_heading is not None:
+            pm = max(abs(prev_heading[0]), abs(prev_heading[1])) or 1
+            pux, puy = prev_heading[0] / pm, prev_heading[1] / pm
+            # 点积：1=同向, 0=垂直, -1=反向
+            dot_p = pux * h[0]/max(abs(h[0]),1) + puy * h[1]/max(abs(h[1]),1)
+            if dot_p < -0.5:   # 反向（≥135°）：重惩罚
+                mom_pen = 4.0
+            elif dot_p < 0.3:   # 大角度偏转（90°~135°）：中惩罚
+                mom_pen = 1.5
+            # dot_p >= 0.3：相近方向（≤~70°），无惩罚，保持动量
+        # 围栏切向约束：超限时惩罚远离 Core 的航向（鼓励沿围栏探索或微回撤）
+        core_pen = 0.0
+        if toward_core is not None:
+            dx_c = pos[0] - toward_core[0]
+            dy_c = pos[1] - toward_core[1]
+            dc = max(abs(dx_c), abs(dy_c)) or 1
+            # Core 方向单位向量（从当前位置指向 Core）
+            cx, cy = -dx_c / dc, -dy_c / dc
+            # 航向与"指向Core"方向的点积：负值=远离Core
+            dot_c = cx * (h[0]/max(abs(h[0]),1)) + cy * (h[1]/max(abs(h[1]),1))
+            if dot_c < -0.3:   # 明显远离 Core → 重惩罚
+                core_pen = 4.0
+            elif dot_c < 0.1:  # 切向/微远离 → 轻惩罚
+                core_pen = 1.0
+            # dot_c >= 0.1：朝向或切向Core → 无惩罚
+        score = (cong * 3.0 + (1 - unexp) * 1.0 + ang_diff * 0.15
+                 + used_pen + block_pen + exc_pen + mom_pen + core_pen)
         if best_score is None or score < best_score - 1e-9:
             best_score = score
             best_h = h
@@ -1022,12 +1055,17 @@ def _scout_init_leg(ws: WorkerState, w, pos: Position, radius: int,
 def _scout_rechoose(ws: WorkerState, w, pos: Position, radius: int,
                     workers, map_mem: MapMemory, avoid_radius: int,
                     worker_states, blocked: Optional[set] = None,
-                    exclude: Optional[tuple] = None) -> None:
+                    exclude: Optional[tuple] = None,
+                    prev_heading: Optional[tuple] = None,
+                    toward_core: Optional[Position] = None) -> None:
     """到达/受阻时重选航向（避开别的人工已占方向、优先朝未探索区、不朝死胡同）。
-    exclude：卡死换航向时传入"刚卡住的航向"，强制选一个不同的方向。"""
+    exclude：卡死换航向时传入"刚卡住的航向"，强制选一个不同的方向。
+    prev_heading：上一条航向，用于动量偏好（避免跨地图跳目标）。
+    toward_core：围栏超限时传入 Core 坐标，惩罚远离Core的航向（沿围栏切向探索）。"""
     idx = _worker_index(w, workers)
     ws.scout_heading = _choose_scout_heading(pos, w, workers, map_mem, idx,
-                                              avoid_radius, worker_states, blocked, exclude)
+                                              avoid_radius, worker_states, blocked,
+                                              exclude, prev_heading, toward_core)
     ws.scout_origin = pos
     ws.scout_radius = radius
     ws.scout_target = _scout_target_from(pos, ws.scout_heading, radius)
@@ -1065,23 +1103,17 @@ def _plan_directional_explore(ws: WorkerState, w, pos: Position,
     radius = min(EXPLORER_MAX_RADIUS,
                  EXPLORER_BASE_RADIUS + EXPLORER_RADIUS_PER_UNIT * num_units)
     avoid_radius = _avoid_radius(map_mem, num_units)
-    # 离家硬围栏：工人离 Core 超过阈值 → 先回撤，不再向外派腿。
+    # 离家硬围栏：工人离 Core 超过阈值 → 不回家，改为沿围栏切向继续探索。
     # 旧决策探索是"从当前位置接力外扩"，本无离家上限；此围栏把最远离家
-    # 距离锁死在 EXPLORER_HOME_RADIUS 内（类似新决策的 idle_explore_radius）。
+    # 距离锁死在 EXPLORER_HOME_RADIUS 内。超限时清掉外扩腿、重新选一条不远离
+    # Core 的航向（优先切向/微回撤方向），让工人沿围栏边缘持续铺图而非空跑回家。
     if core_pos and manhattan(pos, core_pos) > EXPLORER_HOME_RADIUS:
-        # 清掉旧的外扩腿目标，回撤到家内再重新探索（避免出界/入界反复横跳）
         ws.scout_target = None
-        ws.scout_heading = None
         ws.scout_origin = None
-        d = worker_step(pos, core_pos, blocked)
-        if d:
-            _mv(w, d)
-            ws.target = core_pos
-            ws.last_pos = tuple(pos)
-            return
-        # 朝家无路（被障碍/单位堵）：重选航向破局（沿用卡死保护思路）
         _scout_rechoose(ws, w, pos, radius, workers, map_mem, avoid_radius,
-                        worker_states, blocked)
+                        worker_states, blocked,
+                        prev_heading=ws.scout_heading,
+                        toward_core=core_pos)
         ws.last_pos = tuple(pos)
         return
     # 卡死检测：用上一 tick 记录的位置判断本 tick 是否真的移动了
@@ -1094,13 +1126,15 @@ def _plan_directional_explore(ws: WorkerState, w, pos: Position,
     # 让路：身边同向、更低索引工人优先 → 高索引者重选，避免两两并行走
     if ws.scout_heading and _should_yield_heading(w, pos, ws.scout_heading,
                                                    workers, worker_states, avoid_radius):
-        _scout_rechoose(ws, w, pos, radius, workers, map_mem, avoid_radius, worker_states, blocked)
+        _scout_rechoose(ws, w, pos, radius, workers, map_mem, avoid_radius, worker_states, blocked,
+                        prev_heading=ws.scout_heading)
     # 卡死 → 换一个不同的航向（绝不重选刚卡住的那个方向）
     if ws.stuck_ticks >= 2:
         ws.stuck_ticks = 0
         ws.takeover_active = False
         _scout_rechoose(ws, w, pos, radius, workers, map_mem, avoid_radius,
-                        worker_states, blocked, exclude=ws.scout_heading)
+                        worker_states, blocked, exclude=ws.scout_heading,
+                        prev_heading=ws.scout_heading)
     reached = ws.scout_target is not None and manhattan(pos, ws.scout_target) <= 1
     overshot = (ws.scout_origin is not None
                 and manhattan(pos, ws.scout_origin) >= max(ws.scout_radius, 1))
@@ -1108,7 +1142,8 @@ def _plan_directional_explore(ws: WorkerState, w, pos: Position,
         # 接手的这条腿走完了 → 释放"接手"标记，重新回到正常的探索/采集分配池，
         # 否则被派遣过的工人会永久锁定成探索工，探采比例逐渐失衡。
         ws.takeover_active = False
-        _scout_rechoose(ws, w, pos, radius, workers, map_mem, avoid_radius, worker_states, blocked)
+        _scout_rechoose(ws, w, pos, radius, workers, map_mem, avoid_radius, worker_states, blocked,
+                        prev_heading=ws.scout_heading)
     tgt = ws.scout_target
     d = worker_step(pos, tgt, blocked)
     if d:
@@ -1117,7 +1152,8 @@ def _plan_directional_explore(ws: WorkerState, w, pos: Position,
     else:
         # 朝当前航向无路（死胡同/被障碍封死）→ 换一个不同的开放航向，破局
         _scout_rechoose(ws, w, pos, radius, workers, map_mem, avoid_radius,
-                        worker_states, blocked, exclude=ws.scout_heading)
+                        worker_states, blocked, exclude=ws.scout_heading,
+                        prev_heading=ws.scout_heading)
         ws.target = ws.scout_target
     ws.last_pos = tuple(pos)  # 记录本 tick 位置供下 tick 卡死检测
 
