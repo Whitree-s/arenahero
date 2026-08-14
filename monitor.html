@@ -13,14 +13,23 @@
   body { margin:0; background:var(--bg); color:var(--text);
     font:13px/1.5 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
     display:flex; flex-direction:column; height:100vh; overflow:hidden; }
-  header { padding:10px 16px; border-bottom:1px solid var(--line);
-    display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
-  header h1 { font-size:15px; margin:0; }
-  .live { display:flex; align-items:center; gap:7px; font-weight:700; color:#4cc2ff; }
-  .dot { width:9px; height:9px; border-radius:50%; background:#4cc2ff; animation:pulse 1.1s infinite; }
+  header { padding:8px 16px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  header h1 { font-size:13px; margin:0; white-space:nowrap; }
+  .live { display:flex; align-items:center; gap:6px; font-weight:700; color:#4cc2ff; font-size:12px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:#4cc2ff; animation:pulse 1.1s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
-  .stats { display:flex; gap:14px; flex-wrap:wrap; }
-  .stat b { color:var(--accent); }
+  /* 药丸卡片式统计栏（参考截图2风格） */
+  .stat-pill { background:rgba(19,26,40,0.9); border:1px solid var(--line); border-radius:10px;
+    padding:5px 12px; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    min-width:56px; }
+  .stat-pill .val { font-size:15px; font-weight:700; color:var(--text); line-height:1.2;
+    font-variant-numeric:tabular-nums; }
+  .stat-pill .val.accent { color:var(--accent); }
+  .stat-pill .val.green { color:#39d98a; }
+  .stat-pill .val.red { color:#ff4d5e; }
+  .stat-pill .val.orange { color:#ffb24d; }
+  .stat-pill .lbl { font-size:10px; color:var(--muted); line-height:1.2; margin-top:1px; }
   button, .filebtn { background:var(--accent); color:#04121f; border:none; border-radius:6px;
     padding:5px 12px; font-weight:600; cursor:pointer; }
   button.ghost { background:var(--panel); color:var(--text); border:1px solid var(--line); }
@@ -79,6 +88,43 @@
   .hint { color:var(--muted); font-size:12px; }
   input[type=range]{ width:100%; }
 
+  /* ===== 单位详细列表面板（参考截图1风格）===== */
+  .unitlist { display:flex; flex-direction:column; gap:0; font-size:12px; overflow:auto;
+    flex:1 1 auto; min-height:0; }
+  .ul-section { border-bottom:1px solid var(--line); }
+  .ul-section:last-child { border-bottom:none; }
+  .ul-head { display:flex; align-items:center; gap:6px; padding:6px 8px 4px;
+    cursor:pointer; user-select:none; background:rgba(255,255,255,0.02);
+    transition:background .15s; }
+  .ul-head:hover { background:rgba(255,255,255,0.05); }
+  .ul-head svg { flex-shrink:0; }
+  .ul-head .name { font-weight:600; font-size:12px; color:var(--text); }
+  .ul-head .count { margin-left:auto; font-size:11px; color:var(--muted);
+    font-variant-numeric:tabular-nums; background:rgba(255,255,255,0.06);
+    padding:1px 7px; border-radius:8px; }
+  .ul-head .chev { font-size:10px; color:var(--muted); transition:transform .2s;
+    display:inline-block; width:12px; text-align:center; }
+  .ul-head.collapsed .chev { transform:rotate(-90deg); }
+  .ul-body { display:flex; flex-direction:column; padding:2px 0 6px; }
+  .ul-body.hidden { display:none; }
+  .ul-row { display:grid; grid-template-columns:auto 1fr auto auto auto;
+    gap:4px 8px; align-items:center; padding:2px 8px 2px 20px; }
+  .ul-row:hover { background:rgba(255,255,255,0.03); }
+  .ul-uid { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums;
+    font-family:"SF Mono",Menlo,Consolas,monospace; }
+  /* HP 条：绿色渐变条 */
+  .hp-bar { height:7px; background:rgba(255,255,255,0.08); border-radius:3px;
+    overflow:hidden; min-width:40px; max-width:80px; }
+  .hp-fill { height:100%; border-radius:3px; background:linear-gradient(90deg,#39d98a,#2ee6c9);
+    transition:width .15s; }
+  .hp-fill.low { background:linear-gradient(90deg,#ff4d5e,#ff8a3d); }
+  .hp-fill.mid { background:linear-gradient(90deg,#ffb24d,#ffe14c); }
+  /* 动作标签 */
+  .ul-tag { font-size:10px; font-weight:700; color:#04121f; padding:1px 6px;
+    border-radius:3px; white-space:nowrap; }
+  .ul-pos { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums;
+    font-family:"SF Mono",Menlo,Consolas,monospace; text-align:right; }
+
   /* ===== 地图内滑块设置面板（左上角浮动，点击按钮展开/收起）===== */
   .lp-panel { position:absolute; top:12px; left:12px; z-index:30; width:300px; max-width:calc(100% - 24px); }
   .lp-toggle { background:rgba(19,26,40,0.92); color:var(--text); border:1px solid var(--line);
@@ -109,15 +155,15 @@
 </head>
 <body>
 <header>
-  <h1>Arena Hero · 实时小地图监控</h1>
+  <h1>Arena Hero</h1>
   <span class="live"><span class="dot"></span><span id="liveTxt">LIVE</span></span>
-  <div class="stats">
-    <span class="stat">tick <b id="sTick">–</b></span>
-    <span class="stat">资源 <b id="sRes">–</b></span>
-    <span class="stat">核心HP <b id="sHp">–</b></span>
-    <span class="stat">我方 <b id="sUnits">–</b></span>
-    <span class="stat">敌人 <b id="sEnemy">–</b></span>
-  </div>
+  <div class="stat-pill"><span class="val accent" id="sTick">–</span><span class="lbl">tick</span></div>
+  <div class="stat-pill"><span class="val" id="sWVR">–</span><span class="lbl">工人/先锋/游侠</span></div>
+  <div class="stat-pill"><span class="val green" id="sRes">–</span><span class="lbl">Core 资源</span></div>
+  <div class="stat-pill"><span class="val" id="sHp">–</span><span class="lbl">在建数</span></div>
+  <div class="stat-pill"><span class="val orange" id="sUnits">–</span><span class="lbl">资源/小时</span></div>
+  <div class="stat-pill"><span class="val red" id="sEnemy">–</span><span class="lbl">累计伤害</span></div>
+  <div class="stat-pill"><span class="val" id="sUptime">–</span><span class="lbl">本次在线</span></div>
   <span style="flex:1"></span>
   <div class="zoombar">
     <button id="zOut" class="ghost" title="缩小看全局">−</button>
@@ -193,25 +239,10 @@
       <div class="sec sec-note hint">滚轮缩放 · 适配=自动取景 · 绿◆=记忆资源(离开视野仍锁定派遣) · 绿●=当前视野资源 · 橙图标=敌方消失点(按兵种) · 单位上方小字=决策标签(arena-evolve 每 tick 决策的 branch)</div>
     </div>
 
-    <!-- 单位状态面板：工人/先锋/游侠计数 + 下一步生产 -->
-    <div class="card" style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;">
-      <h2 style="font-size:12px;margin:0 0 8px;color:var(--muted);font-weight:600;letter-spacing:.5px;">单位状态</h2>
-      <div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 12px;align-items:center;font-size:12px;">
-        <span style="display:inline-flex;align-items:center;gap:5px;">
-          <svg width="14" height="14" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="#4cc2ff" stroke="#fff" stroke-width="1"/></svg>
-          工人
-        </span><b id="sW" style="color:#4cc2ff">–</b>
-        <span></span>
-        <span style="display:inline-flex;align-items:center;gap:5px;">
-          <svg width="14" height="14" viewBox="0 0 20 20"><rect x="3" y="3" width="14" height="14" fill="#ff79c6" stroke="#fff" stroke-width="1"/></svg>
-          先锋
-        </span><b id="sV" style="color:#ff79c6">–</b>
-        <span></span>
-        <span style="display:inline-flex;align-items:center;gap:5px;">
-          <svg width="14" height="14" viewBox="0 0 20 20"><polygon points="10,3 17,17 3,17" fill="#c08bff" stroke="#fff" stroke-width="1"/></svg>
-          游侠
-        </span><b id="sR" style="color:#c08bff">–</b>
-        <span id="nextProdBox" style="text-align:right;"></span>
+    <!-- 单位详细列表面板（可折叠兵种段，每单位显示 HP 条 / 动作标签 / 坐标） -->
+    <div class="card" style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:0; display:flex; flex-direction:column; overflow:hidden;">
+      <div class="unitlist" id="unitList">
+        <div style="padding:10px 12px;color:var(--muted);font-size:12px;text-align:center;">等待数据…</div>
       </div>
     </div>
   </div>
@@ -701,6 +732,7 @@ function activeFilters(){ const f={}; document.querySelectorAll("#filters input"
 
 function renderStats(){
   const t = TICKS.length ? TICKS[TICKS.length-1] : null;
+  const startTime = window._startTime || (window._startTime=Date.now());
   if(!t){
     if(MAPBASE){
       document.getElementById("sTick").textContent=MAPBASE.tick;
@@ -709,31 +741,160 @@ function renderStats(){
       document.getElementById("sUnits").textContent="-";
       document.getElementById("sEnemy").textContent="-";
     }
-    document.getElementById("sW").textContent="–"; document.getElementById("sV").textContent="–";
-    document.getElementById("sR").textContent="–"; document.getElementById("nextProdBox").innerHTML="";
+    document.getElementById("sWVR").textContent="–";
+    document.getElementById("sUptime").textContent="–";
+    document.getElementById("unitList").innerHTML='<div style="padding:10px 12px;color:var(--muted);font-size:12px;text-align:center;">等待数据…</div>';
     return;
   }
+  // ── 头部药丸卡片 ──
   document.getElementById("sTick").textContent=t.tick;
-  document.getElementById("sRes").textContent=t.resources;
-  document.getElementById("sHp").textContent=t.core?t.core.hp+"/"+t.core.shield:"-";
-  document.getElementById("sUnits").textContent=t.units.filter(u=>u.type!=="core").length;
-  document.getElementById("sEnemy").textContent=t.enemies.length;
-  // 单位状态面板
-  const uc = t.unit_counts||{};
-  document.getElementById("sW").textContent=uc.worker!=null?uc.worker:"–";
-  document.getElementById("sV").textContent=uc.vanguard!=null?uc.vanguard:"–";
-  document.getElementById("sR").textContent=uc.ranger!=null?uc.ranger:"–";
-  const np = t.next_production;
-  if(np){
-    const np_cn={"VANGUARD":"先锋","RANGER":"游侠","WORKER":"工人"}[np]||np;
-    const np_col=FRIEND_COLORS[np]||"#4cc2ff";
-    document.getElementById("nextProdBox").innerHTML=
-      '<span style="font-size:11px;color:var(--muted)">下一步:</span>'+
-      '<span class="tag" style="background:'+np_col+'">'+np_cn+'</span>';
+  // 资源：当前/上限（上限 = 人口×5，v0.14 规则）
+  const pop = t.population || (t.units?t.units.length:0);
+  const resCap = Math.max(pop * 5, 5);
+  const curRes = t.resources != null ? t.resources : "?";
+  document.getElementById("sRes").textContent = typeof curRes === "number" ? curRes+"/"+resCap : curRes;
+  // 核心 HP/盾
+  if(t.core){
+    document.getElementById("sHp").textContent = t.core.hp+"/"+(t.core.shield||"?");
   } else {
-    document.getElementById("nextProdBox").innerHTML=
-      '<span style="font-size:11px;color:var(--muted)">下一步: –</span>';
+    document.getElementById("sHp").textContent="–";
   }
+  // 我方单位数
+  const myUnits = (t.units||[]).filter(u=>(u.type||"").toUpperCase()!=="CORE");
+  document.getElementById("sUnits").textContent=myUnits.length;
+  // 敌人数
+  document.getElementById("sEnemy").textContent=(t.enemies||[]).length;
+  // 工人/先锋/游侠 计数
+  const uc = t.unit_counts||{};
+  const w = uc.worker!=null?uc.worker:myUnits.filter(u=>(u.type||"").toUpperCase()==="WORKER").length;
+  const v = uc.vanguard!=null?uc.vanguard:myUnits.filter(u=>(u.type||"").toUpperCase()==="VANGUARD").length;
+  const r = uc.ranger!=null?uc.ranger:myUnits.filter(u=>(u.type||"").toUpperCase()==="RANGER").length;
+  document.getElementById("sWVR").textContent=w+"/"+v+"/"+r;
+  // 在线时长
+  const secs = Math.floor((Date.now()-startTime)/1000);
+  if(secs < 3600) document.getElementById("sUptime").textContent=Math.floor(secs/60)+"m"+(secs%60)+"s";
+  else { const h=Math.floor(secs/3600), m=Math.floor((secs%3600)/60); document.getElementById("sUptime").textContent=h+"h"+m+"m"; }
+
+  // ── 单位详细列表 ──
+  renderUnitList(t);
+}
+
+// 动作标签颜色映射（与事件流 tag 颜色一致）
+const TAG_COLORS = {
+  harvest:"#39d98a", HARVEST_SUCCEEDED:"#1f9d57",
+  deposit_move:"#4cc2ff", DEPOSIT_SUCCEEDED:"#2b7fd4",
+  explore:"#2ee6c9", encounter_enemy:"#ff5d6c",
+  attacked:"#ff2e4d", attack:"#ff8a3d", flee:"#e85ad8",
+  death:"#ff1a2c", wait:"var(--muted)", hold_full:"var(--muted)",
+  return_core:"#4cc2ff", deposit:"#4cc2ff", goto_near:"#39d98a",
+  goto_resource:"#39d98a", wait_resource:"var(--muted)",
+  block:"#ffb24d", harass:"#ffb24d", revisit:"#2ee6c9",
+  scout:"#2ee6c9", osc_break:"#ffb24d", osc_wait:"var(--muted)",
+  yield_core:"#4cc2ff", exit_cave:"#4cc2ff", sweep:"#ff8a3d",
+  siege_intercept_vanguard:"#ff8a3d", siege_vanguard:"#ff8a3d",
+  attack:"#ff8a3d", raid:"#ff8a3d", explore:"#2ee6c9", park:"var(--muted)",
+  corner_block:"#ffb24d", push_core:"#4cc2ff", push_greedy:"#ff8a3d",
+  retreat_low_hp:"#ff4d5e", ranger_disengage:"#e85ad8",
+  siege_ranger:"#ff8a3d", home_ranger:"var(--muted)",
+  home_vanguard:"var(--muted), vault_ranger:"var(--muted)",
+  shoot_stationary:"#ff8a3d", shoot:"#ff8a3d", patrol:"#2ee6c9",
+  kite:"#e85ad8", track:"#ff8a3d", ranger_cover:"#ff79c6",
+  ranger_angle:"#c08bff", ranger_advance:"#ff8a3d",
+  ranger_cover_advance:"#ff79c6", firing_advance:"#ff8a3d",
+  siege_ranger_cover:"#ff79c6", siege_ranger_angle:"#c08bff",
+  siege_ranger_advance:"#ff8a3d", siege_ranger_cover_advance:"#ff79c6",
+  vanguard_cover:"#ff79c6", vanguard_angle:"#c08bff",
+  vanguard_advance:"#ff8a3d", vanguard_cover_advance:"#ff79c6",
+  spread:"#2ee6c9", self_destruct:"#ff1a2c",
+};
+
+function tagColor(tag){
+  if(!tag) return "rgba(139,151,173,0.25)";
+  return TAG_COLORS[tag] || "rgba(139,151,173,0.25)";
+}
+
+function renderUnitList(t){
+  const box = document.getElementById("unitList");
+  const units = t.units || [];
+  const core = t.core;
+  // 按兵种分组
+  const byType = { WORKER:[], VANGUARD:[], RANGER:[] };
+  units.forEach(u=>{
+    const ut = (u.type||"").toUpperCase();
+    if(byType[ut]) byType[ut].push(u);
+  });
+
+  // 兵种图标 SVG（复用已有配色）
+  const ICONS = {
+    CORE: '<svg width="16" height="16" viewBox="0 0 20 20"><path d="M10,2 L11.8,7.5 L17.6,7.5 L12.9,10.9 L14.7,16.5 L10,13 L5.3,16.5 L7.1,10.9 L2.4,7.5 L8.2,7.5 Z" fill="#4cc2ff" stroke="#fff" stroke-width="1"/></svg>',
+    WORKER: '<svg width="14" height="14" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="#4cc2ff" stroke="#fff" stroke-width="1"/></svg>',
+    VANGUARD: '<svg width="14" height="14" viewBox="0 0 20 20"><rect x="3" y="3" width="14" height="14" fill="#ff79c6" stroke="#fff" stroke-width="1"/></svg>',
+    RANGER: '<svg width="14" height="14" viewBox="0 0 20 20"><polygon points="10,3 17,17 3,17" fill="#c08bff" stroke="#fff" stroke-width="1"/></svg>'
+  };
+
+  // HP 条颜色判定
+  function hpClass(hp, max){ return hp/max <= 0.33 ? "low" : hp/max <= 0.66 ? "mid" : ""; }
+
+  let html = '';
+
+  // ── Core 行 ──
+  if(core){
+    const chp = core.hp||0, csh = core.shield||0, cpos = core.pos||[0,0];
+    const cmax = 5; // Core 最大 HP
+    html += `<div class="ul-section">
+      <div class="ul-head">${ICONS.CORE}<span class="name">Core</span>
+        <span class="hp-bar" style="min-width:50px;max-width:90px;height:8px;"><span class="hp-fill ${hpClass(chp,cmax)}" style="width:${Math.max(0,(chp/cmax)*100)}%"></span></span>
+        <span style="font-size:11px;font-weight:700;color:#4cc2ff">盾${csh}</span>
+        ${csh>0?'<span class="ul-tag" style="background:rgba(76,194,255,0.2);color:#4cc2ff">驻守</span>':''}
+        <span class="ul-pos">[${cpos[0]},${cpos[1]}]</span></div></div>`;
+  }
+
+  // ── 各兵种段 ──
+  const TYPE_NAMES = { WORKER:"工人", VANGUARD:"先锋", RANGER:"游侠" };
+  const TYPE_KEYS = ["WORKER","VANGUARD","RANGER"];
+  // 默认展开状态记录
+  if(!window._ulExpand) window._ulExpand = { WORKER:true, VANGUARD:true, RANGER:true };
+
+  TYPE_KEYS.forEach(type=>{
+    const list = byType[type];
+    const name = TYPE_NAMES[type];
+    const expanded = window._ulExpand[type];
+    html += `<div class="ul-section">
+      <div class="ul-head ${expanded?'':'collapsed'}" onclick="_ulToggle('${type}',this)">
+        ${ICONS[type]}<span class="name">${name}</span>
+        <span class="count">×</${list.length}</span>
+        <span class="chev">▾</span></div>
+      <div class="ul-body ${expanded?'':'hidden'}">`;
+    list.forEach(u=>{
+      const uid = u.id||u.uid||"?";
+      const hp = u.hp||0;
+      const maxHp = u.max_hp||5; // 默认最大 HP
+      const pos = u.pos||[0,0];
+      const tag = u.tag ? tagCN(u.tag) : "";
+      const cargo = u.cargo || 0;
+      // 工人显示载货量，战斗单位显示动作标签
+      const displayTag = type==="WORKER"
+        ? (cargo > 0 ? `载${cargo}` : (tag||"—"))
+        : (tag||"—");
+      const tagCol = type==="WORKER" && cargo > 0 ? "#39d98a" : tagColor(u.tag);
+      html += `<div class="ul-row">
+        <span class="ul-uid">${uid}</span>
+        <span class="hp-bar"><span class="hp-fill ${hpClass(hp,maxHp)}" style="width:${Math.max(0,(hp/maxHp)*100)}%"></span></span>
+        <span class="ul-tag" style="background:${tagCol};color:#04121f">${displayTag}</span>
+        <span class="ul-pos">[${pos[0]},${pos[1]}]</span></div>`;
+    });
+    html += `</div></div>`;
+  });
+
+  box.innerHTML = html;
+}
+
+// 折叠/展开切换
+function _ulToggle(type, headEl){
+  window._ulExpand[type] = !window._ulExpand[type];
+  headEl.classList.toggle("collapsed");
+  const body = headEl.nextElementSibling;
+  if(body) body.classList.toggle("hidden");
 }
 
 function renderFeed(){
