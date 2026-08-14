@@ -206,6 +206,9 @@ class HeuristicStrategy(Strategy):
         self._combat_clusters = []    # 本 Tick 全局进攻计划：敌方战斗单位簇
         self._combat_assigned = {}    # uid -> {ci, slot, enemy} 进攻分配
         self._engaged_clusters = set()  # 已聚齐、正式进攻的簇标识(敌方uid集合)
+        # 友军受援：附近队友低血/被攻击时，健康单位优先掩护（不受威胁比例限制）
+        self._support_targets = {}      # uid -> (ally_uid, enemy_pos) 掩护目标
+        self._supporting = set()       # 本 Tick 被分配去支援的 uid 集合
         self._revisit_goal = None     # 当前回访目标
         self._revisit_since = 0
         self._last_prune = 0
@@ -690,6 +693,10 @@ class HeuristicStrategy(Strategy):
         # 仅在进攻模式(非躲藏/非防御)下构建；防御/劣势时清空并退回守家。
         if not vault_now and not defense:
             self._plan_combat(obs, core_pos, threat)
+
+        # 友军受援：检测低血/被攻击的队友，指派附近健康单位去掩护
+        # （无论威胁比例高低都生效——劣势时更需要支援）
+        self._plan_support(obs, core_pos)
 
         # 巡逻 Ranger 分配：永久守家 Ranger 优先，再补到两个近家巡逻位。
         rangers = sorted([u["uid"] for u in obs.units if u["utype"] == "RANGER"])
@@ -1774,6 +1781,10 @@ class HeuristicStrategy(Strategy):
                                       enemy_cores, "VANGUARD")
         if pa is not None:
             return pa
+        # 友军受援：被分配去支援受攻击队友（不受威胁比例限制）
+        sa = self._support_action(u, obs, core_pos)
+        if sa is not None:
+            return sa
         # 无进攻计划（无可见敌方集群）时才走旧追击逻辑兜底
         if not self._combat_clusters:
             target, mem_key = self._select_combat_target(pos, enemies,
@@ -1887,6 +1898,10 @@ class HeuristicStrategy(Strategy):
                                       enemy_cores, "RANGER")
         if pa is not None:
             return pa
+        # 友军受援：被分配去支援受攻击队友（不受威胁比例限制）
+        sa = self._support_action(u, obs, core_pos)
+        if sa is not None:
+            return sa
         # An unsupported 2 HP Ranger should not accept a stationary ranged
         # trade far from the squad.  Step out of the firing line, then re-engage
         # once support arrives or the enemy follows into a worse position.
@@ -2566,6 +2581,191 @@ class HeuristicStrategy(Strategy):
         if active:
             self._attack_point = min(
                 active, key=lambda p: self._dist(p, core_pos))
+
+    # ------------------------------------------------------------------
+    # 友军受援：附近队友低血/被攻击时，健康单位优先掩护
+    # ------------------------------------------------------------------
+    SUPPORT_DIST = 12          # 支援搜索半径（距受援队友的距离）
+    SUPPORT_ENEMY_DIST = 8     # 接敌距离（支援单位看到威胁敌人后直接攻击）
+
+    def _plan_support(self, obs, core_pos):
+        """检测需要支援的队友，指派附近健康单位去掩护。
+
+        触发条件（任一满足即标记为需支援）：
+        1. HP ≤ flee_hp × max_hp（低血撤退中）
+        2. 上一 tick 受到攻击事件（CORE_DAMAGED / UNIT_DAMAGED）
+
+        指派规则：
+        - 守家预留单位不参与支援
+        - 已被进攻计划分配的单位不重复指派
+        - 每个受援队友最多分配 3 个支援者
+        - 支援者优先走向威胁敌人位置（而非队友位置——去接敌不是去送死）
+        """
+        self._support_targets.clear()
+        self._supporting.clear()
+
+        if not obs.units or not core_pos:
+            return
+
+        g = self.genes
+        flee_ratio = g["flee_hp"]  # 默认 0.35
+
+        # ---- Step 1: 找出所有需要支援的队友 ----
+        threatened = []  # (unit, reason, enemy_pos_hint)
+        for u in obs.units:
+            if u["utype"] not in ("VANGUARD", "RANGER"):
+                continue
+            uid = u["uid"]
+            pos = tuple(u["pos"])
+            hp = u["hp"]
+            max_hp = 4 if u["utype"] == "VANGUARD" else 2
+            retreat_at = max(1, math.ceil(flee_ratio * max_hp))
+
+            ally_needs_help = False
+            reason = ""
+            enemy_hint = None
+
+            # 条件1: 低血
+            if hp <= retreat_at:
+                ally_needs_help = True
+                reason = "low_hp"
+            # 条件2: 上一 tick 被攻击
+            if not ally_needs_help and obs.prev_events:
+                for ev in obs.prev_events:
+                    if ev.get("type") in ("UNIT_DAMAGED", "CORE_DAMAGED") \
+                            and ev.get("obj_id") == uid:
+                        ally_needs_help = True
+                        reason = "attacked"
+                        # 从事件中提取攻击者位置（如果有）
+                        ep = ev.get("source_pos")
+                        if ep:
+                            enemy_hint = tuple(ep)
+                        break
+
+            if ally_needs_help:
+                # 如果没有明确的敌人位置提示，找视野内最近的敌方战斗单位
+                if enemy_hint is None:
+                    nearest_e = None
+                    nearest_d = 999
+                    for e in obs.enemies:
+                        if e["utype"] in ("VANGUARD", "RANGER"):
+                            d = self._dist(pos, tuple(e["pos"]))
+                            if d < nearest_d:
+                                nearest_d = d
+                                nearest_e = tuple(e["pos"])
+                    if nearest_e and nearest_d <= 10:
+                        enemy_hint = nearest_e
+
+                threatened.append((u, reason, enemy_hint))
+
+        if not threatened:
+            return
+
+        # ---- Step 2: 为每个受援队友分配支援者 ----
+        used = set()
+        home = self._home_guards | set(self._combat_assigned.keys())
+        # 已被进攻计划分配的也不重复用（避免一个单位同时执行两个任务）
+        combat_assigned_uids = set(self._combat_assigned.keys())
+
+        for ally, reason, enemy_hint in threatened:
+            ally_pos = tuple(ally["pos"])
+            ally_uid = ally["uid"]
+
+            # 候选支援者：健康战斗单位，非守家、非已分配、非自己
+            candidates = []
+            for u in obs.units:
+                uid = u["uid"]
+                if uid in used or uid in home or uid in combat_assigned_uids:
+                    continue
+                if uid == ally_uid:
+                    continue
+                if u["utype"] not in ("VANGUARD", "RANGER"):
+                    continue
+                upos = tuple(u["pos"])
+                uhp = u["hp"]
+                umax = 4 if u["utype"] == "VANGUARD" else 2
+                # 支援者也必须是健康的（>50% HP），否则自己也得撤退
+                if uhp <= umax * 0.5:
+                    continue
+                d = self._dist(upos, ally_pos)
+                if d <= self.SUPPORT_DIST:
+                    candidates.append((u, d))
+
+            # 按距离排序，最多分配 3 个
+            candidates.sort(key=lambda x: x[1])
+            support_count = min(3, len(candidates))
+            for i in range(support_count):
+                supporter, _d = candidates[i]
+                sup_uid = supporter["uid"]
+                used.add(sup_uid)
+                self._supporting.add(sup_uid)
+                # 支援目标：有明确敌人位置 → 去接敌；否则 → 去队友身边
+                target = enemy_hint if enemy_hint else ally_pos
+                self._support_targets[sup_uid] = (ally_uid, target)
+
+    def _support_action(self, u, obs, core_pos):
+        """返回支援行动；未分配支援则返回 None。"""
+        a = self._support_targets.get(u["uid"])
+        if a is None:
+            return None
+        ally_uid, target = a
+        pos = tuple(u["pos"])
+
+        # 已到达目标附近(≤2格) → 尝试攻击可见敌人或待命掩护
+        if self._dist(pos, target) <= 2:
+            # 目标是敌人位置：尝试 SWEEP / SHOOT
+            enemies = [e for e in getattr(obs, "enemies", [])
+                       if e["utype"] in ("VANGUARD", "RANGER")]
+            enemy_cores = [(c["pos"], c.get("hp", 5), c.get("owner", "?"))
+                           for c in getattr(obs, "enemy_cores", [])]
+
+            if u["utype"] == "VANGUARD":
+                # 找最近的可见敌人
+                nearest_e = None
+                nearest_d = 999
+                for e in enemies:
+                    d = self._dist(pos, tuple(e["pos"]))
+                    if d < nearest_d:
+                        nearest_d = d
+                        nearest_e = e
+                if nearest_e and nearest_d == 1:
+                    ep = tuple(nearest_e["pos"])
+                    self._dbg(u["uid"], "support_sweep", ep)
+                    return ("SWEEP", {"direction": dir_name(
+                        ep[0] - pos[0], ep[1] - pos[1])})
+                if nearest_e and nearest_d > 1:
+                    step = self.pf.next_step(pos, tuple(nearest_e["pos"]))
+                    if step:
+                        self._dbg(u["uid"], "support_approach", tuple(nearest_e["pos"]))
+                        return ("MOVE", {"direction": dir_name(
+                            step[0] - pos[0], step[1] - pos[1])})
+                # 到位但无可见敌人 → 待命掩护
+                self._dbg(u["uid"], "support_cover", target)
+                return None
+
+            # RANGER: 尝试射击
+            for e in enemies + enemy_cores:
+                ep = e["pos"] if isinstance(e, dict) else e[0]
+                if self._shot_valid(u, pos, tuple(ep)):
+                    self._dbg(u["uid"], "support_shoot", tuple(ep))
+                    return ("SHOOT", {"expected_cell": list(ep)})
+            # 无射击目标 → 移动向目标
+            step = self.pf.next_step(pos, target)
+            if step:
+                self._dbg(u["uid"], "support_move_ranger", target)
+                return ("MOVE", {"direction": dir_name(
+                    step[0] - pos[0], step[1] - pos[1])})
+            self._dbg(u["uid"], "support_cover", target)
+            return None
+
+        # 未到达 → 移向目标
+        step = self.pf.next_step(pos, target)
+        if step:
+            self._dbg(u["uid"], "support_reinforce", target)
+            return ("MOVE", {"direction": dir_name(
+                step[0] - pos[0], step[1] - pos[1])})
+        self._dbg(u["uid"], "support_stuck", target)
+        return None
 
     def _combat_plan_action(self, u, obs, core_pos, enemies, enemy_cores, role):
         """被分配到进攻计划的单位：返回其本 Tick 行动；未分配返回 None。"""
