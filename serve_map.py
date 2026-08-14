@@ -1,5 +1,6 @@
 import http.server
 import json
+import os
 import socketserver
 from functools import partial
 
@@ -29,6 +30,32 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         """CORS preflight：浏览器发跨域 fetch 前会先发 OPTIONS 探测"""
         self.send_response(200)
         self.end_headers()
+
+    def do_GET(self):
+        """扩展 GET：/api/mode 返回当前启用的决策模式（读 .active_agent）。
+        其余路径交给 SimpleHTTPRequestHandler 按文件服务。"""
+        path = self.path.split("?")[0]
+        if path == "/api/mode":
+            mode = self._read_active_agent()
+            payload = json.dumps({"mode": mode}, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        return super().do_GET()
+
+    @staticmethod
+    def _read_active_agent():
+        """读 .active_agent 状态文件：legacy(旧决策) / evolve(新决策) / null(未知)。"""
+        try:
+            p = os.path.join(DIRECTORY, ".active_agent")
+            with open(p) as f:
+                v = f.read().strip()
+            return v if v in ("legacy", "evolve") else None
+        except OSError:
+            return None
 
     def do_POST(self):
         """实时调参入口：monitor 网页滑块 → 写入 stream/live_params.json。

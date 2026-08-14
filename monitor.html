@@ -78,6 +78,33 @@
     background:rgba(7,11,18,.92); border-radius:10px; text-align:center; }
   .hint { color:var(--muted); font-size:12px; }
   input[type=range]{ width:100%; }
+
+  /* ===== 地图内滑块设置面板（左上角浮动，点击按钮展开/收起）===== */
+  .lp-panel { position:absolute; top:12px; left:12px; z-index:30; width:300px; max-width:calc(100% - 24px); }
+  .lp-toggle { background:rgba(19,26,40,0.92); color:var(--text); border:1px solid var(--line);
+    border-radius:8px; padding:6px 12px; font-size:12px; font-weight:600; cursor:pointer;
+    display:inline-flex; align-items:center; gap:6px; backdrop-filter:blur(4px); }
+  .lp-toggle:hover { border-color:var(--accent); }
+  .lp-toggle .chev { transition:transform .2s ease; display:inline-block; font-size:10px; }
+  .lp-toggle.open .chev { transform:rotate(180deg); }
+  .lp-body { margin-top:8px; background:rgba(19,26,40,0.96); border:1px solid var(--line);
+    border-radius:10px; padding:12px; max-height:calc(100vh - 120px); overflow:auto;
+    box-shadow:0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(6px); }
+  .lp-head { display:flex; align-items:center; justify-content:space-between; gap:8px;
+    margin-bottom:4px; }
+  .lp-head b { font-size:12px; color:var(--muted); letter-spacing:.5px; }
+  .lp-mode { font-size:11px; color:var(--accent); font-weight:700; }
+  .lp-note { font-size:11px; line-height:1.6; color:var(--muted); margin-bottom:8px; }
+  .lp-note.warn { color:#ffb24d; }
+  .lp-sliders { display:flex; flex-direction:column; gap:9px; }
+  .lp-slrow { display:grid; grid-template-columns:1fr auto; gap:2px 8px; align-items:center; }
+  .lp-slrow label { grid-column:1/3; display:flex; justify-content:space-between; gap:8px;
+    font-size:12px; cursor:pointer; }
+  .lp-slrow label .v { color:var(--muted); font-variant-numeric:tabular-nums; }
+  .lp-slrow input[type=range]{ grid-column:1/3; }
+  .lp-status { font-size:11px; color:var(--muted); margin-top:8px; min-height:14px; }
+  .lp-status.ok { color:#39d98a; }
+  .lp-status.err { color:#ff6b6b; }
 </style>
 </head>
 <body>
@@ -105,6 +132,22 @@
 <div class="wrap">
   <div class="mapbox">
     <canvas id="cv" width="720" height="600"></canvas>
+    <!-- 地图内滑块设置：左上角浮动按钮，点击展开/收起 -->
+    <div class="lp-panel" id="lpPanel">
+      <button class="lp-toggle" id="lpToggle"><span class="chev">▾</span>⚙ 参数设置</button>
+      <div class="lp-body" id="lpBody" style="display:none">
+        <div class="lp-head">
+          <b>实时调参</b>
+          <span class="lp-mode" id="lpMode">–</span>
+        </div>
+        <div class="lp-note" id="lpNote">下一 tick 即时生效，无需重启 agent；参数自动记录，刷新页面不丢失。</div>
+        <div class="lp-sliders" id="lpSliders"></div>
+        <div class="lp-status" id="lpStatus"></div>
+        <div class="row" style="margin-top:10px">
+          <button id="lpReset" class="ghost" style="font-size:11px;padding:3px 10px">恢复默认</button>
+        </div>
+      </div>
+    </div>
     <div id="drop"><div>未能自动加载分片流。<br/>请通过本地服务器打开本页（需 stream/index.json），<br/>或点右上角「打开流文件」加载单文件。</div></div>
   </div>
 
@@ -147,24 +190,6 @@
         <span><svg width="18" height="18" viewBox="0 0 20 20"><path d="M10,2 L11.8,7.5 L17.6,7.5 L12.9,10.9 L14.7,16.5 L10,13 L5.3,16.5 L7.1,10.9 L2.4,7.5 L8.2,7.5 Z" fill="#4cc2ff" stroke="#fff" stroke-width="1"/></svg>核心</span>
       </div>
       <div class="sec sec-note hint">滚轮缩放 · 适配=自动取景 · 绿◆=记忆资源(离开视野仍锁定派遣) · 绿●=当前视野资源 · 橙图标=敌方消失点(按兵种) · 单位上方小字=决策标签(arena-evolve 每 tick 决策的 branch)</div>
-      <div class="sec" id="liveParamsSec">
-        <div class="row" style="justify-content:space-between;align-items:center;margin-top:4px">
-          <b style="font-size:12px;color:var(--muted);letter-spacing:.5px">实时调参（新决策）</b>
-          <button id="lpReset" class="ghost" style="font-size:11px;padding:2px 8px">恢复默认</button>
-        </div>
-        <div class="hint" style="font-size:11px;line-height:1.6">滑块下一 tick 即时生效，无需重启 agent</div>
-        <div id="lpSliders" style="display:flex;flex-direction:column;gap:9px;margin-top:2px"></div>
-        <div class="hint" id="lpStatus" style="font-size:11px;color:var(--muted)"></div>
-      </div>
-      <div class="sec" id="liveParamsOldSec">
-        <div class="row" style="justify-content:space-between;align-items:center;margin-top:4px">
-          <b style="font-size:12px;color:var(--muted);letter-spacing:.5px">实时调参（旧决策）</b>
-          <button id="lpOldReset" class="ghost" style="font-size:11px;padding:2px 8px">恢复默认</button>
-        </div>
-        <div class="hint" style="font-size:11px;line-height:1.6">调整探索半径可控制工人跑多远</div>
-        <div id="lpOldSliders" style="display:flex;flex-direction:column;gap:9px;margin-top:2px"></div>
-        <div class="hint" id="lpOldStatus" style="font-size:11px;color:var(--muted)"></div>
-      </div>
     </div>
 
     <!-- 单位状态面板：工人/先锋/游侠计数 + 下一步生产 -->
@@ -843,6 +868,8 @@ document.getElementById("file").onchange=e=>{
 };
 
 // ===== 实时调参：地图网页滑块 → /api/params → stream/live_params.json =====
+// 根据当前启用的决策(legacy=旧 / evolve=新)只显示对应滑块；参数写入 localStorage，
+// 刷新页面后即时恢复，并再与服务器 live_params.json 对账（服务器为权威来源）。
 const LP_CONFIG = [
   {key:"worker_ratio",       label:"探索单位占比(工人)", min:0.10, max:0.90, step:0.01, def:0.5463523563273454, unit:"", ns:"new"},
   {key:"patrol_radius",       label:"战斗单位活动半径",  min:3,    max:12,   step:0.5,  def:7.5,               unit:"格", ns:"new"},
@@ -858,93 +885,159 @@ const LP_OLD_CONFIG = [
   {key:"explorer_radius_per_unit", label:"每单位增加半径",   min:0,  max:5,  step:0.5,def:2,  unit:"格", ns:"old"},
 ];
 
+// 当前决策模式：null=未识别(兜底新决策)，"new"=evolve(新决策)，"old"=legacy(旧决策)
+let currentMode = null;
+let _lpLastMode = null;
+let _lpTimer = null;
+
 function _lpFmt(c, v){
   const n = parseFloat(v);
   const s = c.step < 1 ? n.toFixed(2) : String(Math.round(n));
   return s + (c.unit ? (" " + c.unit) : "");
 }
+function _lpConfigFor(ns){ return ns === "old" ? LP_OLD_CONFIG : LP_CONFIG; }
+function _lpNsLabel(ns){ return ns === "old" ? "旧决策(legacy)" : "新决策(evolve)"; }
+function _lpLsKey(ns){ return "ah_lp_" + ns; }
 
-function _buildLpSliders(config, boxId){
-  const box = document.getElementById(boxId);
+// localStorage 持久化（按命名空间独立保存，刷新即恢复，不依赖服务器往返）
+function _lpSave(ns){
+  const cfg = _lpConfigFor(ns);
+  const obj = {};
+  cfg.forEach(c=>{ if(c._inp) obj[c.key] = parseFloat(c._inp.value); });
+  try { localStorage.setItem(_lpLsKey(ns), JSON.stringify(obj)); } catch(e){}
+}
+function _lpRestore(ns){
+  let obj = null;
+  try { obj = JSON.parse(localStorage.getItem(_lpLsKey(ns)) || "null"); } catch(e){}
+  if(!obj) return;
+  const cfg = _lpConfigFor(ns);
+  cfg.forEach(c=>{ if(obj[c.key] !== undefined && c._inp){ c._inp.value = obj[c.key]; c._val.textContent = _lpFmt(c, obj[c.key]); } });
+}
+
+// 根据当前模式构建滑块（只建当前决策的，其它决策不显示）
+function _buildActiveSliders(){
+  const box = document.getElementById("lpSliders");
   box.innerHTML = "";
-  config.forEach(c=>{
+  const note = document.getElementById("lpNote");
+  const modeEl = document.getElementById("lpMode");
+  if(!currentMode){
+    // 未识别模式：兜底显示新决策，并提示
+    currentMode = "new";
+    modeEl.textContent = "未知";
+    note.className = "lp-note warn";
+    note.textContent = "未识别当前决策模式（.active_agent 缺失），默认显示新决策。运行 switch_agent.sh 后点此按钮可刷新。";
+  } else {
+    modeEl.textContent = _lpNsLabel(currentMode);
+    note.className = "lp-note";
+    note.textContent = "下一 tick 即时生效，无需重启 agent；参数自动记录，刷新页面不丢失。";
+  }
+  const cfg = _lpConfigFor(currentMode);
+  cfg.forEach(c=>{
     const row = document.createElement("div");
-    row.style.cssText = "display:grid;grid-template-columns:1fr auto;gap:2px 8px;align-items:center;";
+    row.className = "lp-slrow";
     const lab = document.createElement("label");
-    lab.style.cssText = "font-size:12px;grid-column:1/3;display:flex;justify-content:space-between;gap:8px;cursor:pointer;";
     const name = document.createElement("span"); name.textContent = c.label;
-    const val = document.createElement("span");
-    val.style.cssText = "color:var(--muted);font-variant-numeric:tabular-nums;";
+    const val = document.createElement("span"); val.className = "v";
     lab.appendChild(name); lab.appendChild(val);
     const inp = document.createElement("input");
     inp.type = "range"; inp.min = c.min; inp.max = c.max; inp.step = c.step; inp.value = c.def;
-    inp.style.cssText = "grid-column:1/3;width:100%;";
-    inp.dataset.key = c.key;
     row.appendChild(lab); row.appendChild(inp); box.appendChild(row);
     val.textContent = _lpFmt(c, c.def);
     inp.addEventListener("input", ()=>{ val.textContent = _lpFmt(c, inp.value); schedulePushLiveParams(); });
     c._inp = inp; c._val = val;
   });
+  _lpRestore(currentMode);   // 1) 先从 localStorage 即时恢复（刷新不丢）
+  loadLiveParams();          // 2) 再与服务器对账（服务器为权威来源）
+  _lpLastMode = currentMode;
 }
 
-function buildLiveParams(){
-  _buildLpSliders(LP_CONFIG, "lpSliders");
-  _buildLpSliders(LP_OLD_CONFIG, "lpOldSliders");
-}
-
-let _lpTimer = null;
 function schedulePushLiveParams(){
   clearTimeout(_lpTimer);
   _lpTimer = setTimeout(pushLiveParams, 250);  // 防抖：避免每像素一请求
 }
 function pushLiveParams(){
-  const data = {new:{}, old:{}};
-  LP_CONFIG.forEach(c=>{ data.new[c.key] = parseFloat(c._inp.value); });
-  LP_OLD_CONFIG.forEach(c=>{ data.old[c.key] = parseFloat(c._inp.value); });
+  if(!currentMode) return;
+  const cfg = _lpConfigFor(currentMode);
+  const data = {}; data[currentMode] = {};
+  cfg.forEach(c=>{ if(c._inp) data[currentMode][c.key] = parseFloat(c._inp.value); });
+  _lpSave(currentMode);   // 立即落盘 localStorage
+  const st = document.getElementById("lpStatus");
+  st.className = "lp-status"; st.textContent = "发送中…";
   fetch(ah_url("/api/params"), {
     method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(data)
   })
     .then(r=> r.ok ? r.json() : Promise.reject(new Error("HTTP "+r.status)))
-    .then(()=>{ document.getElementById("lpStatus").textContent = "已应用 ✓"; document.getElementById("lpOldStatus").textContent = "已应用 ✓"; })
-    .catch(e=>{ document.getElementById("lpStatus").textContent = "发送失败：" + e.message; document.getElementById("lpOldStatus").textContent = "发送失败：" + e.message; });
+    .then(()=>{ st.className = "lp-status ok"; st.textContent = "已应用 ✓"; })
+    .catch(e=>{ st.className = "lp-status err"; st.textContent = "发送失败：" + e.message; });
 }
 function loadLiveParams(){
+  if(!currentMode) return;
   fetch(ah_url("stream/live_params.json") + "?_=" + Date.now())
     .then(r=> r.ok ? r.json() : null)
     .then(j=>{
       if(!j) return;
-      if(j.new) LP_CONFIG.forEach(c=>{
-        const v = j.new[c.key];
-        if(v !== undefined){ c._inp.value = v; c._val.textContent = _lpFmt(c, v); }
-      });
-      if(j.old) LP_OLD_CONFIG.forEach(c=>{
-        const v = j.old[c.key];
-        if(v !== undefined){ c._inp.value = v; c._val.textContent = _lpFmt(c, v); }
+      const ns = currentMode;
+      const src = j[ns];
+      if(!src) return;
+      const cfg = _lpConfigFor(ns);
+      cfg.forEach(c=>{
+        const v = src[c.key];
+        if(v !== undefined && c._inp){
+          c._inp.value = v; c._val.textContent = _lpFmt(c, v);
+          // 写回 localStorage，保证刷新后与服务器一致
+          try { const o = JSON.parse(localStorage.getItem(_lpLsKey(ns)) || "{}"); o[c.key] = v;
+            localStorage.setItem(_lpLsKey(ns), JSON.stringify(o)); } catch(e){}
+        }
       });
     })
     .catch(()=>{});
 }
-document.getElementById("lpReset").addEventListener("click", ()=>{
-  const data = {new:{}};
-  LP_CONFIG.forEach(c=>{ c._inp.value = c.def; c._val.textContent = _lpFmt(c, c.def); data.new[c.key] = c.def; });
+function resetLiveParams(){
+  if(!currentMode) return;
+  const cfg = _lpConfigFor(currentMode);
+  const data = {}; data[currentMode] = {};
+  cfg.forEach(c=>{ if(c._inp){ c._inp.value = c.def; c._val.textContent = _lpFmt(c, c.def); data[currentMode][c.key] = c.def; } });
+  _lpSave(currentMode);
+  const st = document.getElementById("lpStatus");
+  st.className = "lp-status"; st.textContent = "发送中…";
   fetch(ah_url("/api/params"), {
     method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(data)
   })
-    .then(()=>{ document.getElementById("lpStatus").textContent = "已恢复默认 ✓"; })
-    .catch(e=>{ document.getElementById("lpStatus").textContent = "发送失败：" + e.message; });
-});
-document.getElementById("lpOldReset").addEventListener("click", ()=>{
-  const data = {old:{}};
-  LP_OLD_CONFIG.forEach(c=>{ c._inp.value = c.def; c._val.textContent = _lpFmt(c, c.def); data.old[c.key] = c.def; });
-  fetch(ah_url("/api/params"), {
-    method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(data)
-  })
-    .then(()=>{ document.getElementById("lpOldStatus").textContent = "已恢复默认 ✓"; })
-    .catch(e=>{ document.getElementById("lpOldStatus").textContent = "发送失败：" + e.message; });
-});
+    .then(()=>{ st.className = "lp-status ok"; st.textContent = "已恢复默认 ✓"; })
+    .catch(e=>{ st.className = "lp-status err"; st.textContent = "发送失败：" + e.message; });
+}
 
-buildLiveParams();
-loadLiveParams();
+// 展开/收起：点击按钮切换；展开时重新探测决策模式（捕捉 agent 切换）
+const lpToggle = document.getElementById("lpToggle");
+const lpBody = document.getElementById("lpBody");
+lpToggle.addEventListener("click", ()=>{
+  const open = lpBody.style.display === "none";
+  lpBody.style.display = open ? "block" : "none";
+  lpToggle.classList.toggle("open", open);
+  if(open) fetchMode();
+});
+document.getElementById("lpReset").addEventListener("click", resetLiveParams);
+
+// 探测当前决策模式：legacy=旧决策(old) / evolve=新决策(new) / null=未识别
+async function fetchMode(){
+  try{
+    const r = await fetch(ah_url("/api/mode") + "?_=" + Date.now());
+    if(r.ok){
+      const j = await r.json();
+      const ns = j.mode === "legacy" ? "old" : (j.mode === "evolve" ? "new" : null);
+      if(ns !== _lpLastMode){
+        currentMode = ns;
+        _buildActiveSliders();
+      }
+      return;
+    }
+  }catch(e){}
+  // 探测失败且尚未构建过：兜底构建新决策
+  if(_lpLastMode === null){ currentMode = null; _buildActiveSliders(); }
+}
+
+fetchMode();          // 初始化：探测模式 → 构建对应滑块
+setInterval(fetchMode, 15000);  // 每 15s 复查决策模式（切换 agent 时自动换滑块，仅在变化时重建）
 buildFilters();
 fitCanvas();
 poll();
