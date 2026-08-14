@@ -50,7 +50,7 @@
   .col { display:flex; flex-direction:column; gap:10px; min-height:0; }
   .side-left { width:320px; flex:0 0 auto;
     /* 左列：监控设置 / 单位状态(下方窗口占更多高度) */
-    display:grid; grid-template-rows:4fr 6fr; gap:10px; }
+    display:grid; grid-template-rows:6.5fr 3.5fr; gap:10px; }
   /* 右列：事件过滤(上) + 实时事件流(下，占满剩余空间) */
   .side-right { width:360px; flex:0 0 auto;
     display:grid; grid-template-rows:auto 1fr; gap:10px; min-height:0; }
@@ -240,6 +240,7 @@
 
     <!-- 单位详细列表面板（可折叠兵种段，每单位显示 HP 条 / 动作标签 / 坐标） -->
     <div class="card" style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:0; display:flex; flex-direction:column; overflow:hidden;">
+      <h2 style="padding:12px 12px 8px;margin:0;border-bottom:1px solid var(--line);">单位状态</h2>
       <div class="unitlist" id="unitList" style="overflow-y:auto; flex:1 1 0; min-height:0;">
         <div style="padding:10px 12px;color:var(--muted);font-size:12px;text-align:center;">等待数据…</div>
       </div>
@@ -276,7 +277,7 @@ const ORDER = ["harvest","HARVEST_SUCCEEDED","deposit_move","DEPOSIT_SUCCEEDED",
 const TAG_CN = {
   wait:"待命", manual:"手动", siege_block:"堵路", self_destruct:"自毁",
   flee:"撤退", flee_memory:"记忆撤退", hold_full:"满仓待", return_core:"回核心",
-  deposit:"存放", goto_near:"就近采", goto_resource:"去资源", wait_resource:"等资源",
+  deposit:"存放", goto_near:"就近采", goto_resource:"采集", wait_resource:"等资源",
   block:"堵路", harass:"骚扰工", revisit:"回访", scout:"侦察",
   osc_break:"脱困", osc_wait:"振荡等", yield_core:"让核心", exit_cave:"出洞",
   sweep:"扫荡", siege_intercept_vanguard:"拦截", siege_vanguard:"攻城", attack:"攻击",
@@ -876,7 +877,7 @@ function renderUnitList(t){
       const cargo = u.cargo || 0;
       // 工人显示载货量，战斗单位显示动作标签
       const displayTag = type==="WORKER"
-        ? (cargo > 0 ? `运载${cargo}` : (tag||"—"))
+        ? (cargo > 0 ? `运载` : (tag||"—"))
         : (tag||"—");
       const tagCol = type==="WORKER" && cargo > 0 ? "#39d98a" : tagColor(u.tag);
       html += `<div class="ul-row">
