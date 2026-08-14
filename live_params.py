@@ -7,7 +7,7 @@
 
 命名空间：
 - "new"：新决策（arena-evolve / HeuristicStrategy）的参数
-- "old"：旧决策（arena_agent.py）的参数（本期未接入，预留）
+- "old"：旧决策（arena_agent.py）的模块级全局常量覆盖
 """
 import json
 import os
@@ -27,6 +27,11 @@ SPECS = {
         "idle_explore_radius": (0.0, 60.0),   # 探索距离上限（本次新增基因）
         "scout_search_limit": (10.0, 80.0),   # 探索搜索半径（本次新增基因）
     },
+    "old": {
+        "explorer_base_radius": (5.0, 40.0),   # 旧决策：基础探索半径（默认20）
+        "explorer_max_radius": (10.0, 80.0),   # 旧决策：探索半径上限（默认60）
+        "explorer_radius_per_unit": (0.0, 5.0), # 旧决策：每单位增加半径（默认2）
+    },
 }
 
 # 滑块默认值（与 evolve_v7_best.json 部署值一致），用于"恢复默认"。
@@ -39,6 +44,11 @@ DEFAULTS = {
         "defense_radius": 11.0797481548136,
         "idle_explore_radius": 15.0,
         "scout_search_limit": 40.0,
+    },
+    "old": {
+        "explorer_base_radius": 20.0,
+        "explorer_max_radius": 60.0,
+        "explorer_radius_per_unit": 2.0,
     },
 }
 
@@ -124,3 +134,31 @@ def apply_to_genes(strat, namespace="new"):
     for name, value in params.items():
         strat.genes[name] = value
     return True
+
+
+def apply_to_globals(globals_dict, namespace="old", mapping=None):
+    """把覆盖参数写到模块全局变量（旧决策 arena_agent.py 用）。
+
+    globals_dict: sys.modules['arena_agent'].__dict__（或直接传 globals()）。
+    mapping: {live_params_key: global_var_name}，默认自动推导。
+    返回是否实际改动了任何值。
+    """
+    params = get_params(namespace)
+    if not params:
+        return False
+    if mapping is None:
+        # 自动映射：下划线命名转大写（explorer_base_radius → EXPLORER_BASE_RADIUS）
+        mapping = {}
+        for k in params:
+            mapping[k] = k.upper()
+    changed = False
+    for lp_key, var_name in mapping.items():
+        if lp_key in params and var_name in globals_dict:
+            try:
+                old = float(globals_dict[var_name])
+                globals_dict[var_name] = int(params[lp_key]) if isinstance(
+                    globals_dict[var_name], int) else params[lp_key]
+                changed = True
+            except (TypeError, ValueError, KeyError):
+                pass
+    return changed

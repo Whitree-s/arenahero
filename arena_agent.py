@@ -3973,6 +3973,13 @@ def main():
                 state.match_checked = False   # 允许重连后首 tick 重新判定是否换局
                 for turn in game.turns():
                     last_turn_ts["t"] = time.time()   # 收到 tick → 续命
+                    # 实时调参：读滑块覆盖（每 tick 热更新全局常量）
+                    try:
+                        import live_params as _lp
+                        _lp.apply_to_globals(globals(), "old")
+                    except Exception:
+                        pass
+
                     try:
                         plan_turn_v2(turn, state, game)
                     except Exception as exc:
