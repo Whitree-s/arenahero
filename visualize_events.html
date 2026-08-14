@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Arena Hero · 行动路线与事件可视化</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #161d2e; --line: #243049;
+    --text: #e6ebf5; --muted: #8b97ad; --accent: #4cc2ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    padding: 10px 16px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .hint { color: var(--muted); font-size: 12px; }
+  button, .filebtn {
+    background: var(--accent); color: #04121f; border: none; border-radius: 6px;
+    padding: 5px 12px; font-weight: 600; cursor: pointer;
+  }
+  button.ghost { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
+  input[type=range] { width: 100%; }
+  .wrap { display: flex; gap: 12px; padding: 12px; align-items: stretch; }
+  .mapbox { position: relative; background: #0b1018; border: 1px solid var(--line); border-radius: 10px; }
+  canvas { display: block; border-radius: 10px; }
+  .side { width: 340px; display: flex; flex-direction: column; gap: 10px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+  .card h2 { font-size: 12px; margin: 0 0 8px; color: var(--muted); font-weight: 600; letter-spacing: .5px; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; }
+  .filters label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .stat { display: flex; justify-content: space-between; padding: 2px 0; }
+  .stat b { font-weight: 600; }
+  .log { height: 260px; overflow: auto; font-size: 12px; }
+  .log .item { padding: 4px 6px; border-left: 3px solid transparent; cursor: pointer; border-radius: 4px; }
+  .log .item:hover { background: #1d2740; }
+  .ev-tick { color: var(--muted); margin-right: 6px; }
+  .cur { background: #11203a; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; height: 150px; overflow: auto; }
+  .cur .e { padding: 2px 0; }
+  .legend { font-size: 11px; color: var(--muted); }
+  .legend span { margin-right: 10px; }
+  .tag { display:inline-block; padding:0 6px; border-radius:4px; font-size:11px; color:#04121f; font-weight:700; }
+  #drop { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+          background:rgba(10,16,24,.92); border-radius:10px; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Arena Hero · 行动路线与事件可视化</h1>
+  <span class="hint" id="meta">加载 event_log.json…</span>
+  <span style="flex:1"></span>
+  <label class="filebtn">打开日志
+    <input id="file" type="file" accept=".json" style="display:none" />
+  </label>
+</header>
+
+<div class="wrap">
+  <div class="mapbox">
+    <canvas id="cv" width="760" height="600"></canvas>
+    <div id="drop"><div>未能自动加载 event_log.json。<br/>请将生成的 event_log.json 拖入此处，或点右上角「打开日志」。</div></div>
+  </div>
+
+  <div class="side">
+    <div class="card">
+      <h2>时间轴</h2>
+      <div class="row" style="margin-bottom:6px">
+        <button id="play">▶ 播放</button>
+        <button class="ghost" id="step">单步 ›</button>
+        <span class="hint" id="tlabel">tick 0</span>
+      </div>
+      <input id="slider" type="range" min="0" max="0" value="0" />
+      <div class="row" style="margin-top:6px">
+        <span class="hint">速度</span>
+        <input id="speed" type="range" min="1" max="10" value="4" style="flex:1" />
+      </div>
+      <div class="legend" style="margin-top:6px">
+        <span><span class="dot" style="background:#ffd24c"></span>核心</span>
+        <span><span class="dot" style="background:#4cc2ff"></span>我方</span>
+        <span><span class="dot" style="background:#ff5d6c"></span>敌人</span>
+        <span><span class="dot" style="background:#7c8aa5"></span>障碍</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>事件过滤</h2>
+      <div class="filters" id="filters"></div>
+      <div class="row" style="margin-top:8px">
+        <label><input type="checkbox" id="showTrails" checked /> 显示行动轨迹</label>
+        <label><input type="checkbox" id="showRes" checked /> 显示资源</label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>本 tick 事件</h2>
+      <div class="cur" id="curEvents"></div>
+    </div>
+
+    <div class="card" style="flex:1; display:flex; flex-direction:column; min-height:0;">
+      <h2>事件流（可点击跳转）</h2>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const TYPE_COLORS = {
+  worker: "#4cc2ff", vanguard: "#ffa64c", ranger: "#c08bff", core: "#ffd24c",
+};
+const EV_META = {
+  harvest:        { label: "采集",      color: "#39d98a" },
+  HARVEST_SUCCEEDED: { label: "采集成功", color: "#1f9d57" },
+  deposit_move:   { label: "回核心交付", color: "#4cc2ff" },
+  DEPOSIT_SUCCEEDED: { label: "交付成功", color: "#2b7fd4" },
+  explore:        { label: "探索",      color: "#2ee6c9" },
+  encounter_enemy:{ label: "遭遇敌人",   color: "#ff5d6c" },
+  attacked:       { label: "被攻击",     color: "#ff2e4d" },
+  attack:         { label: "攻击敌人",   color: "#ff8a3d" },
+  flee:           { label: "撤退",      color: "#e85ad8" },
+};
+const ORDER = ["harvest","HARVEST_SUCCEEDED","deposit_move","DEPOSIT_SUCCEEDED","explore","encounter_enemy","attacked","attack","flee"];
+
+let DATA = null, TRAILS = null, BOUNDS = null, SCALE = 1, OFF = {x:0,y:0};
+let cur = 0, playing = false, timer = null;
+
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+
+function hue(str){ let h=0; for(let i=0;i<str.length;i++) h=(h*31+str.charCodeAt(i))>>>0; return h%360; }
+function unitColor(id){ return `hsl(${hue(id)},70%,62%)`; }
+
+function buildTrails(){
+  TRAILS = { units:{}, enemies:{} };
+  DATA.ticks.forEach(t=>{
+    t.units.forEach(u=>{
+      (TRAILS.units[u.id] ||= []).push({tick:t.tick, pos:u.pos});
+    });
+    t.enemies.forEach(e=>{
+      (TRAILS.enemies[e.id] ||= []).push({tick:t.tick, pos:e.pos});
+    });
+  });
+}
+
+function computeBounds(){
+  let minX=1e9,maxX=-1e9,minY=1e9,maxY=-1e9;
+  const acc=p=>{ if(!p)return; minX=Math.min(minX,p[0]);maxX=Math.max(maxX,p[0]);minY=Math.min(minY,p[1]);maxY=Math.max(maxY,p[1]); };
+  DATA.ticks.forEach(t=>{
+    if(t.core) acc(t.core.pos);
+    t.units.forEach(u=>acc(u.pos));
+    t.enemies.forEach(e=>acc(e.pos));
+    (t.obstacles||[]).forEach(acc);
+    (t.resources_cells||[]).forEach(acc);
+  });
+  const pad=4;
+  minX-=pad;maxX+=pad;minY-=pad;maxY+=pad;
+  BOUNDS={minX,maxX,minY,maxY};
+  const sw=cv.width, sh=cv.height;
+  const sx=sw/(maxX-minX||1), sy=sh/(maxY-minY||1);
+  SCALE=Math.min(sx,sy)*0.92;
+  OFF.x=(sw-(maxX-minX)*SCALE)/2;
+  OFF.y=(sh-(maxY-minY)*SCALE)/2;
+}
+function sx(x){ return OFF.x+(x-BOUNDS.minX)*SCALE; }
+function sy(y){ return OFF.y+(BOUNDS.maxY-y)*SCALE; } // 翻转 Y，向上为正
+
+function trailUpTo(id, list, tick){
+  const pts=[];
+  for(const p of list){ if(p.tick<=tick) pts.push(p.pos); else break; }
+  return pts;
+}
+
+function draw(){
+  const t = DATA.ticks[cur];
+  ctx.clearRect(0,0,cv.width,cv.height);
+  // 网格
+  ctx.strokeStyle="rgba(255,255,255,0.04)"; ctx.lineWidth=1;
+  for(let gx=Math.floor(BOUNDS.minX); gx<=BOUNDS.maxX; gx++){ ctx.beginPath(); ctx.moveTo(sx(gx),sy(BOUNDS.maxY)); ctx.lineTo(sx(gx),sy(BOUNDS.minY)); ctx.stroke(); }
+  for(let gy=Math.floor(BOUNDS.minY); gy<=BOUNDS.maxY; gy++){ ctx.beginPath(); ctx.moveTo(sx(BOUNDS.minX),sy(gy)); ctx.lineTo(sx(BOUNDS.maxX),sy(gy)); ctx.stroke(); }
+
+  // 障碍（取最近一次非空）
+  let obs=t.obstacles;
+  if(!obs){ for(let i=cur;i>=0;i--){ if(DATA.ticks[i].obstacles){ obs=DATA.ticks[i].obstacles; break; } } }
+  if(obs){ ctx.fillStyle="#7c8aa5"; obs.forEach(p=>{ const x=sx(p[0]),y=sy(p[1]); ctx.fillRect(x-3,y-3,6,6); }); }
+
+  // 资源
+  if(document.getElementById("showRes").checked){
+    ctx.fillStyle="rgba(57,217,138,0.55)";
+    (t.resources_cells||[]).forEach(p=>{ const x=sx(p[0]),y=sy(p[1]); ctx.beginPath(); ctx.arc(x,y,2.6,0,7); ctx.fill(); });
+  }
+
+  // 轨迹
+  if(document.getElementById("showTrails").checked){
+    const ids=Object.keys(TRAILS.units);
+    ids.forEach(id=>{
+      const pts=trailUpTo(id, TRAILS.units[id], t.tick);
+      if(pts.length<2) return;
+      ctx.strokeStyle=unitColor(id); ctx.globalAlpha=0.5; ctx.lineWidth=1.6;
+      ctx.beginPath(); ctx.moveTo(sx(pts[0][0]),sy(pts[0][1]));
+      for(let i=1;i<pts.length;i++) ctx.lineTo(sx(pts[i][0]),sy(pts[i][1]));
+      ctx.stroke(); ctx.globalAlpha=1;
+    });
+  }
+
+  // 核心
+  if(t.core){ const x=sx(t.core.pos[0]),y=sy(t.core.pos[1]); ctx.fillStyle="#ffd24c"; ctx.beginPath(); ctx.arc(x,y,6,0,7); ctx.fill();
+    ctx.strokeStyle="#fff"; ctx.lineWidth=1.5; ctx.stroke(); }
+
+  // 敌人
+  t.enemies.forEach(e=>{
+    const x=sx(e.pos[0]),y=sy(e.pos[1]);
+    ctx.fillStyle="#ff5d6c"; ctx.beginPath(); ctx.moveTo(x,y-6); ctx.lineTo(x+5,y+4); ctx.lineTo(x-5,y+4); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle="#fff"; ctx.lineWidth=1; ctx.stroke();
+  });
+
+  // 我方单位
+  t.units.forEach(u=>{
+    if(u.type==="core") return;
+    const x=sx(u.pos[0]),y=sy(u.pos[1]);
+    ctx.fillStyle=TYPE_COLORS[u.type]||"#4cc2ff";
+    ctx.beginPath(); ctx.arc(x,y,3.4,0,7); ctx.fill();
+    if(u.cargo>0){ ctx.strokeStyle="#fff"; ctx.lineWidth=1; ctx.stroke(); }
+  });
+}
+
+function activeFilters(){
+  const f={}; document.querySelectorAll("#filters input").forEach(c=>f[c.value]=c.checked); return f;
+}
+function renderPanel(){
+  const t=DATA.ticks[cur];
+  document.getElementById("tlabel").textContent="tick "+t.tick+"  ·  资源 "+t.resources + (t.core?("  ·  CoreHP "+t.core.hp+"/"+t.core.shield):"");
+  document.getElementById("slider").value=cur;
+
+  const filt=activeFilters();
+  // 本 tick 事件
+  const ce=document.getElementById("curEvents"); ce.innerHTML="";
+  const evs=t.events.filter(e=>filt[e.type]);
+  if(!evs.length){ ce.innerHTML='<span class="hint">（无）</span>'; }
+  evs.forEach(e=>{
+    const m=EV_META[e.type]||{label:e.type,color:"#8b97ad"};
+    const d=document.createElement("div"); d.className="e";
+    d.innerHTML=`<span class="tag" style="background:${m.color}">${m.label}</span> @(${e.pos[0]},${e.pos[1]}) ${e.detail||""}`;
+    ce.appendChild(d);
+  });
+}
+
+function buildLog(){
+  const log=document.getElementById("log"); log.innerHTML="";
+  const filt=activeFilters();
+  DATA.ticks.forEach((t,idx)=>{
+    t.events.forEach(e=>{
+      if(!filt[e.type]) return;
+      const m=EV_META[e.type]||{label:e.type,color:"#8b97ad"};
+      const d=document.createElement("div"); d.className="item"; d.style.borderLeftColor=m.color;
+      d.innerHTML=`<span class="ev-tick">t${t.tick}</span><span class="tag" style="background:${m.color}">${m.label}</span> @(${e.pos[0]},${e.pos[1]}) ${e.detail||""}`;
+      d.onclick=()=>{ cur=idx; stop(); draw(); renderPanel(); };
+      log.appendChild(d);
+    });
+  });
+  log.scrollTop=0;
+}
+
+function buildFilters(){
+  const box=document.getElementById("filters"); box.innerHTML="";
+  ORDER.forEach(type=>{
+    const m=EV_META[type];
+    const l=document.createElement("label");
+    l.innerHTML=`<input type="checkbox" value="${type}" checked><span class="dot" style="background:${m.color}"></span>${m.label}`;
+    box.appendChild(l);
+  });
+  box.querySelectorAll("input").forEach(c=>c.onchange=()=>{ buildLog(); renderPanel(); });
+}
+
+function loadData(obj){
+  DATA=obj; cur=0;
+  document.getElementById("meta").textContent=(obj.meta&&obj.meta.note?obj.meta.note:"")+" · 共 "+DATA.ticks.length+" ticks";
+  buildTrails(); computeBounds(); buildFilters(); buildLog(); renderPanel(); draw();
+  document.getElementById("slider").max=DATA.ticks.length-1;
+}
+
+function play(){ if(playing)return; playing=true; document.getElementById("play").textContent="⏸ 暂停";
+  const speed=()=>11-+document.getElementById("speed").value;
+  const tick=()=>{ if(!playing)return; if(cur>=DATA.ticks.length-1){stop();return;} cur++; draw(); renderPanel(); timer=setTimeout(tick, speed()*60); };
+  tick(); }
+function stop(){ playing=false; document.getElementById("play").textContent="▶ 播放"; if(timer)clearTimeout(timer); }
+function step(){ stop(); if(cur<DATA.ticks.length-1){cur++; draw(); renderPanel();} }
+
+document.getElementById("play").onclick=()=> playing?stop():play();
+document.getElementById("step").onclick=step;
+document.getElementById("slider").oninput=e=>{ stop(); cur=+e.target.value; draw(); renderPanel(); };
+
+document.getElementById("file").onchange=e=>{
+  const f=e.target.files[0]; if(!f)return;
+  const r=new FileReader(); r.onload=()=>{ try{ loadData(JSON.parse(r.result)); document.getElementById("drop").style.display="none"; }catch(err){ alert("解析失败: "+err); } }; r.readAsText(f);
+};
+
+// 自动加载同目录下的 event_log.json
+fetch("event_log.json").then(r=>{ if(!r.ok) throw 0; return r.json(); }).then(loadData).catch(()=>{
+  document.getElementById("drop").style.display="flex";
+});
+</script>
+</body>
+</html>

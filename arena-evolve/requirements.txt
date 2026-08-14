@@ -1,0 +1,3 @@
+# 线上部署依赖（deploy.py）：官方 Arena Hero Python SDK
+# 模拟器/进化/策略核心不需要任何第三方包。
+arena-hero==0.2.9

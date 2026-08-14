@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+
+# 运行产物（进化结果与状态快照）
+results/
+*.log
+
+# 凭据与本地配置
+.env
+.env.*
+!.env.example
+
+# 编辑器/系统
+.DS_Store
+.idea/
+.vscode/

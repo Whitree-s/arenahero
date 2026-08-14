@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Arena Hero · 实时小地图监控</title>
+<style>
+  :root {
+    --bg:#0b0f17; --panel:#131a28; --line:#243049; --text:#e6ebf5; --muted:#8b97ad; --accent:#4cc2ff;
+  }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:13px/1.5 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    display:flex; flex-direction:column; height:100vh; overflow:hidden; }
+  header { padding:10px 16px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0; }
+  .live { display:flex; align-items:center; gap:7px; font-weight:700; color:#4cc2ff; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#4cc2ff; animation:pulse 1.1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+  .stats { display:flex; gap:14px; flex-wrap:wrap; }
+  .stat b { color:var(--accent); }
+  button, .filebtn { background:var(--accent); color:#04121f; border:none; border-radius:6px;
+    padding:5px 12px; font-weight:600; cursor:pointer; }
+  button.ghost { background:var(--panel); color:var(--text); border:1px solid var(--line); }
+  button.ghost.on { background:var(--accent); color:#04121f; border-color:var(--accent); }
+  .legend { display:flex; gap:12px; flex-wrap:wrap; font-size:11px; color:var(--text-secondary); }
+  .legend span { display:inline-flex; align-items:center; gap:4px; }
+  .legend i { width:11px; height:11px; border-radius:3px; display:inline-block; }
+  .swf { background:#0c1119; border:1px solid rgba(255,255,255,0.08);
+         background-image:repeating-linear-gradient(45deg, transparent, transparent 2px, rgba(255,255,255,0.06) 2px, rgba(255,255,255,0.06) 3px); }
+  .swe { background:rgba(78,150,235,0.55); border:1px solid rgba(120,180,255,0.6); }
+  .swr { background:transparent; border:1px solid rgba(57,217,138,0.9); }
+  .zoombar { display:flex; align-items:center; gap:6px; }
+  .wrap { display:flex; gap:12px; padding:12px; align-items:stretch; flex:1 1 0; min-height:0; }
+  .mapbox { position:relative; background:#070b12; border:1px solid var(--line); border-radius:10px;
+    flex:1 1 0; min-width:0; min-height:0; overflow:hidden; }
+  canvas { display:block; border-radius:10px; cursor:grab; }
+  canvas.grabbing { cursor:grabbing; }
+  .col { display:flex; flex-direction:column; gap:10px; min-height:0; }
+  .side-left { width:320px; flex:0 0 auto;
+    /* 左列：监控设置(7) / 单位状态(3) */
+    display:grid; grid-template-rows:7fr 3fr; gap:10px; }
+  /* 右列：事件过滤(上) + 实时事件流(下，占满剩余空间) */
+  .side-right { width:360px; flex:0 0 auto;
+    display:grid; grid-template-rows:auto 1fr; gap:10px; min-height:0; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; min-height:0; }
+  /* 监控设置：占满剩余空间，尽量不内滚，超出时仍可滚动 */
+  .card.settings-card { overflow:auto; display:flex; flex-direction:column;
+    justify-content:flex-start; gap:10px; }
+  .card.settings-card .sec { display:flex; flex-direction:column; gap:6px; }
+  /* 图例：两列网格 + 色块正常显示 */
+  .card.settings-card .sec-legend { display:grid; grid-template-columns:auto auto;
+    gap:6px 16px; font-size:11px; color:var(--text-secondary); }
+  .card.settings-card .sec-legend span { display:inline-flex; align-items:center; gap:5px; }
+  .card.settings-card .sec-legend i { width:11px; height:11px; border-radius:3px; display:inline-block; flex-shrink:0; }
+  .card.settings-card .sec-note { line-height:1.8; }
+  /* 兵种图标图例 */
+  .card.settings-card .sec-units { display:grid; grid-template-columns:auto auto;
+    gap:6px 18px; font-size:11px; color:var(--text-secondary); }
+  .card.settings-card .sec-units span { display:inline-flex; align-items:center; gap:6px; }
+  .card.settings-card .sec-units svg { flex-shrink:0; }
+  /* 事件过滤：自适应内容高度，超出时可滚动 */
+  .card.filter-card { overflow:auto; display:flex; flex-direction:column; gap:6px; }
+  .card.feedcard { flex:1 1 auto; display:flex; flex-direction:column; overflow:hidden; }
+  .card h2 { font-size:12px; margin:0 0 8px; color:var(--muted); font-weight:600; letter-spacing:.5px; }
+  .row { display:flex; align-items:center; gap:8px; }
+  .filters { display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; }
+  .filters label { display:flex; align-items:center; gap:6px; cursor:pointer; }
+  .sw { width:10px; height:10px; border-radius:3px; display:inline-block; }
+  /* 事件流窗口：超出内容在窗口内滚动，但隐藏滚动条（滚轮/键盘仍可滚动） */
+  .feed { flex:1 1 0; min-height:0; overflow:auto; font-size:12px; scrollbar-width:none; -ms-overflow-style:none; }
+  .feed::-webkit-scrollbar { width:0; height:0; display:none; }
+  .feed .e { padding:3px 6px; border-left:3px solid transparent; border-radius:4px; }
+  .tag { display:inline-block; padding:0 6px; border-radius:4px; font-size:11px; color:#04121f; font-weight:700; }
+  #drop { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(7,11,18,.92); border-radius:10px; text-align:center; }
+  .hint { color:var(--muted); font-size:12px; }
+  input[type=range]{ width:100%; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Arena Hero · 实时小地图监控</h1>
+  <span class="live"><span class="dot"></span><span id="liveTxt">LIVE</span></span>
+  <div class="stats">
+    <span class="stat">tick <b id="sTick">–</b></span>
+    <span class="stat">资源 <b id="sRes">–</b></span>
+    <span class="stat">核心HP <b id="sHp">–</b></span>
+    <span class="stat">我方 <b id="sUnits">–</b></span>
+    <span class="stat">敌人 <b id="sEnemy">–</b></span>
+  </div>
+  <span style="flex:1"></span>
+  <div class="zoombar">
+    <button id="zOut" class="ghost" title="缩小看全局">−</button>
+    <span class="hint" id="zTxt">适配</span>
+    <button id="zIn" class="ghost" title="放大看细节">+</button>
+    <button id="zFit" class="ghost">适配</button>
+    <button id="zCore" class="ghost" title="回到 Core（冠军信标侧）位置">定位Core</button>
+  </div>
+  <label class="filebtn">打开流文件<input id="file" type="file" accept=".jsonl,.json" style="display:none"></label>
+</header>
+
+<div class="wrap">
+  <div class="mapbox">
+    <canvas id="cv" width="720" height="600"></canvas>
+    <div id="drop"><div>未能自动加载分片流。<br/>请通过本地服务器打开本页（需 stream/index.json），<br/>或点右上角「打开流文件」加载单文件。</div></div>
+  </div>
+
+  <div class="col side-left">
+    <div class="card settings-card">
+      <h2>监控设置</h2>
+      <div class="sec">
+        <div class="row">
+          <button id="pause" class="ghost">⏸ 暂停</button>
+          <span class="hint" id="upd">等待数据…</span>
+        </div>
+        <div class="row"><span class="hint" style="width:64px">刷新率</span>
+          <input id="rate" type="range" min="200" max="2000" step="100" value="800" style="flex:1">
+          <span class="hint" id="rateTxt">800ms</span></div>
+      </div>
+      <div class="sec">
+        <div class="row" style="flex-wrap:wrap; gap:10px 20px">
+          <label><input type="checkbox" id="showTrails" checked> 行动轨迹</label>
+          <label><input type="checkbox" id="showRes" checked> 资源</label>
+          <label><input type="checkbox" id="showMemRes" checked> 记忆资源</label>
+          <label><input type="checkbox" id="showExplored" checked> 探索迷雾</label>
+          <label><input type="checkbox" id="showTargets" checked> 终点目标</label>
+          <label><input type="checkbox" id="showTags" checked> 决策标签</label>
+          <label><input type="checkbox" id="showPatrolRings" checked> 巡逻范围</label>
+        </div>
+      </div>
+      <div class="sec sec-legend">
+        <span><i style="background:#000;border:1px solid #555"></i>未探索</span>
+        <span><i style="background:rgba(118,118,130,0.85)"></i>已探索(记忆)</span>
+        <span><i style="background:#408ceb"></i>视野可见</span>
+        <span><i style="background:#39d98a"></i>资源(绿)</span>
+        <span><i style="background:#ff4d5e"></i>敌方(红)</span>
+        <span><i style="background:#ff9628"></i>消失点(橙·兵种形)</span>
+        <span><i style="background:rgba(255,150,40,0.4)"></i>疑似敌核心</span>
+      </div>
+      <div class="sec sec-units">
+        <span><svg width="18" height="18" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="#4cc2ff" stroke="#fff" stroke-width="1"/></svg>工人</span>
+        <span><svg width="18" height="18" viewBox="0 0 20 20"><rect x="3" y="3" width="14" height="14" fill="#ff79c6" stroke="#fff" stroke-width="1"/></svg>先锋</span>
+        <span><svg width="18" height="18" viewBox="0 0 20 20"><polygon points="10,3 17,17 3,17" fill="#c08bff" stroke="#fff" stroke-width="1"/></svg>游侠</span>
+        <span><svg width="18" height="18" viewBox="0 0 20 20"><path d="M10,2 L11.8,7.5 L17.6,7.5 L12.9,10.9 L14.7,16.5 L10,13 L5.3,16.5 L7.1,10.9 L2.4,7.5 L8.2,7.5 Z" fill="#4cc2ff" stroke="#fff" stroke-width="1"/></svg>核心</span>
+      </div>
+      <div class="sec sec-note hint">滚轮缩放 · 适配=自动取景 · 绿◆=记忆资源(离开视野仍锁定派遣) · 绿●=当前视野资源 · 橙图标=敌方消失点(按兵种) · 单位上方小字=决策标签(arena-evolve 每 tick 决策的 branch)</div>
+    </div>
+
+    <!-- 单位状态面板：工人/先锋/游侠计数 + 下一步生产 -->
+    <div class="card" style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;">
+      <h2 style="font-size:12px;margin:0 0 8px;color:var(--muted);font-weight:600;letter-spacing:.5px;">单位状态</h2>
+      <div style="display:grid;grid-template-columns:auto 1fr auto;gap:6px 12px;align-items:center;font-size:12px;">
+        <span style="display:inline-flex;align-items:center;gap:5px;">
+          <svg width="14" height="14" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="#4cc2ff" stroke="#fff" stroke-width="1"/></svg>
+          工人
+        </span><b id="sW" style="color:#4cc2ff">–</b>
+        <span></span>
+        <span style="display:inline-flex;align-items:center;gap:5px;">
+          <svg width="14" height="14" viewBox="0 0 20 20"><rect x="3" y="3" width="14" height="14" fill="#ff79c6" stroke="#fff" stroke-width="1"/></svg>
+          先锋
+        </span><b id="sV" style="color:#ff79c6">–</b>
+        <span></span>
+        <span style="display:inline-flex;align-items:center;gap:5px;">
+          <svg width="14" height="14" viewBox="0 0 20 20"><polygon points="10,3 17,17 3,17" fill="#c08bff" stroke="#fff" stroke-width="1"/></svg>
+          游侠
+        </span><b id="sR" style="color:#c08bff">–</b>
+        <span id="nextProdBox" style="text-align:right;"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="col side-right">
+    <div class="card filter-card">
+      <h2>事件过滤</h2>
+      <div class="filters" id="filters"></div>
+    </div>
+
+    <div class="card feedcard">
+      <h2>实时事件流</h2>
+      <div class="feed" id="feed"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const TYPE_COLORS = { worker:"#4cc2ff", vanguard:"#ff79c6", ranger:"#c08bff", core:"#4cc2ff" };
+const EV_META = {
+  harvest:{label:"采集",color:"#39d98a"}, HARVEST_SUCCEEDED:{label:"采集成功",color:"#1f9d57"},
+  deposit_move:{label:"回核心交付",color:"#4cc2ff"}, DEPOSIT_SUCCEEDED:{label:"交付成功",color:"#2b7fd4"},
+  explore:{label:"探索",color:"#2ee6c9"}, encounter_enemy:{label:"遭遇敌人",color:"#ff5d6c"},
+  attacked:{label:"被攻击",color:"#ff2e4d"}, attack:{label:"攻击敌人",color:"#ff8a3d"},
+  flee:{label:"撤退",color:"#e85ad8"},
+  death:{label:"阵亡",color:"#ff1a2c"},
+};
+const ORDER = ["harvest","HARVEST_SUCCEEDED","deposit_move","DEPOSIT_SUCCEEDED","explore","encounter_enemy","attacked","attack","death","flee"];
+
+// arena-evolve 每单位决策标签（HeuristicStrategy._dbg 写入 _decisions[uid].tag）
+// 的中文映射：monitor 在单位上方显示「此刻在做什么」。未列出的标签原样显示，不丢信息。
+const TAG_CN = {
+  wait:"待命", manual:"手动", siege_block:"堵路", self_destruct:"自毁",
+  flee:"撤退", flee_memory:"记忆撤退", hold_full:"满仓待", return_core:"回核心",
+  deposit:"存放", goto_near:"就近采", goto_resource:"去资源", wait_resource:"等资源",
+  block:"堵路", harass:"骚扰工", revisit:"回访", scout:"侦察",
+  osc_break:"脱困", osc_wait:"振荡等", yield_core:"让核心", exit_cave:"出洞",
+  sweep:"扫荡", siege_intercept_vanguard:"拦截", siege_vanguard:"攻城", attack:"攻击",
+  raid:"突袭", explore:"探索", park:"驻守", corner_block:"卡角", push_core:"推核心",
+  push_greedy:"推进", retreat_low_hp:"低血退",
+  ranger_disengage:"脱离", siege_ranger:"攻城游", home_ranger:"驻守游", home_vanguard:"守家", vault_ranger:"金库游",
+  shoot_stationary:"射击", shoot:"射击", patrol:"巡逻", kite:"风筝", track:"追踪",
+  ranger_cover:"掩射", ranger_angle:"走位", ranger_advance:"推进",
+  ranger_cover_advance:"掩进", firing_advance:"推进",
+  siege_ranger_cover:"攻城掩射", siege_ranger_angle:"攻城走位",
+  siege_ranger_advance:"攻城推进", siege_ranger_cover_advance:"攻城掩进",
+  vanguard_cover:"掩射", vanguard_angle:"走位", vanguard_advance:"推进",
+  vanguard_cover_advance:"掩进",
+  spread:"散开", hold_full:"满格等", self_destruct:"自毁",
+  return_core:"回核心", deposit:"交付", wait_resource:"等资源",
+  goto_near:"去资源点",
+};
+function tagCN(tag){
+  if(!tag) return "";
+  return TAG_CN[tag] || tag;   // 未知标签原样回退，避免信息丢失
+}
+const INDEX_URL = "stream/index.json";
+const SHARD_GLOB = "stream/shard_";
+const MAP_URL = "stream/map.json";
+const ENEMY_MARKS_URL = "stream/enemy_marks.json";
+const MAXTICKS = 2400;
+
+// 取数基址：只有从地图服务器(8742)打开时才用相对路径；
+// 用 file:// 或预览面板(其它端口)打开时自动改用本地服务器绝对地址，
+// 否则 fetch 会被 CORS 拦截 → 分片/快照取不到 → 整片黑。
+const AH_SERVER = "http://127.0.0.1:8742";
+const AH_BASE = (location.protocol === "file:" || (location.host && location.port !== "8742")) ? AH_SERVER + "/" : "";
+function ah_url(u){ return AH_BASE + u; }
+
+// 地图层永久快照（障碍/资源记忆/已探索逐格）。与分片流解耦，不会被环形缓冲淘汰。
+let MAPBASE = null;
+// 敌方敌情标注（消失点 ! + 三角定位核心区），每 tick 更新的小文件
+let ENEMY_MARKS = null;
+let TICKS=[], BOUNDS=null, BASE_SCALE=1, PAN={x:0,y:0}, paused=false, lastUpdate=0;
+let zoom=1, autoFit=true, trackCore=false;
+const cv=document.getElementById("cv"), ctx=cv.getContext("2d");
+
+// 地图画布随容器(=浏览器剩余高度)自适应：按 devicePixelRatio 设内部分辨率保证清晰，
+// 显示尺寸填充满 mapbox。窗口缩放时重新适配并重算取景。
+function fitCanvas(){
+  const box=cv.parentElement;
+  const w=box.clientWidth, h=box.clientHeight;
+  if(w<=0 || h<=0) return;
+  const dpr=window.devicePixelRatio||1;
+  const bw=Math.round(w*dpr), bh=Math.round(h*dpr);
+  if(cv.width!==bw || cv.height!==bh){
+    cv.width=bw; cv.height=bh;
+    cv.style.width=w+"px"; cv.style.height=h+"px";
+    computeBounds(); draw();
+  }
+}
+window.addEventListener("resize", fitCanvas);
+
+function hue(s){ let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0; return h%360; }
+function unitColor(id){ return `hsl(${hue(id)},70%,62%)`; }
+
+// 单位外形配色：敌方统一红色；我方按兵种用队色（外形相同，仅颜色区分敌我）。
+// 绿色专留给资源，故我方不使用绿色：工人蓝 / 先锋橙 / 游侠紫 / 核心蓝。
+const ENEMY_COLOR = "#ff4d5e";
+const FRIEND_COLORS = { WORKER:"#4cc2ff", VANGUARD:"#ff79c6", RANGER:"#c08bff", CORE:"#4cc2ff" };
+function friendColor(type){ return FRIEND_COLORS[(type||"").toUpperCase()] || "#4cc2ff"; }
+// 按兵种画外形（放大到几乎充满单元格）：worker=圆 / vanguard=方 / ranger=三角
+function drawUnitShape(cx, cy, v, type, color, stroke){
+  const s = Math.max(1.5, v*0.47);   // 半格尺寸：图标放大到接近填满整格
+  const t = (type||"").toUpperCase();
+  ctx.fillStyle = color;
+  ctx.strokeStyle = stroke || "#fff";
+  ctx.lineWidth = Math.max(1, v*0.06);
+  if(t==="VANGUARD"){
+    ctx.fillRect(cx-s, cy-s, s*2, s*2);
+    if(stroke) ctx.strokeRect(cx-s, cy-s, s*2, s*2);
+  } else if(t==="RANGER"){
+    // 三角：顶点在上方、底边占满整格宽度，充满单元格
+    ctx.beginPath();
+    ctx.moveTo(cx, cy-s);
+    ctx.lineTo(cx+s, cy+s);
+    ctx.lineTo(cx-s, cy+s);
+    ctx.closePath(); ctx.fill();
+    if(stroke) ctx.stroke();
+  } else {            // WORKER / 默认 = 圆
+    ctx.beginPath(); ctx.arc(cx, cy, s, 0, 7); ctx.fill();
+    if(stroke) ctx.stroke();
+  }
+}
+
+// 核心：五角星，按敌我关系上色（我方蓝/敌方红/消失橙）
+function drawCoreStar(cx, cy, v, color, stroke){
+  const r=Math.max(3,v*0.55);
+  ctx.save(); ctx.translate(cx,cy); ctx.rotate(-Math.PI/2);
+  ctx.fillStyle=color; ctx.strokeStyle=stroke||"#fff"; ctx.lineWidth=1.2;
+  ctx.beginPath();
+  for(let i=0;i<10;i++){ const ang=i*Math.PI*2/10, rad=i%2===0?r:r*0.38;
+    if(i===0)ctx.moveTo(Math.cos(ang)*rad,Math.sin(ang)*rad); else ctx.lineTo(Math.cos(ang)*rad,Math.sin(ang)*rad); }
+  ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.restore();
+}
+
+function computeBounds(){
+  let minX=1e9,maxX=-1e9,minY=1e9,maxY=-1e9;
+  const acc=p=>{ if(!p)return; minX=Math.min(minX,p[0]);maxX=Math.max(maxX,p[0]);minY=Math.min(minY,p[1]);maxY=Math.max(maxY,p[1]); };
+  const fw = autoFit ? 120 : (zoom<0.6 ? 320 : 60);
+  const recent=TICKS.slice(-fw);
+  recent.forEach(t=>{
+    if(t.core) acc(t.core.pos);
+    t.units.forEach(u=>acc(u.pos));
+    t.enemies.forEach(e=>acc(e.pos));
+    (t.obstacles||[]).forEach(acc);
+    (t.resources_cells||[]).forEach(acc);
+  });
+  // 分片流未就绪时，用地图快照(MAPBASE)撑起视图范围，避免整片黑
+  if(!recent.length && MAPBASE){
+    if(MAPBASE.core) acc(MAPBASE.core);
+    (MAPBASE.obstacles||[]).forEach(acc);
+    (MAPBASE.explored_cells||[]).forEach(acc);
+  }
+  if(minX>maxX){minX=-10;maxX=10;minY=-10;maxY=10;}
+  const pad=4; minX-=pad;maxX+=pad;minY-=pad;maxY+=pad;
+  BOUNDS={minX,maxX,minY,maxY};
+  const sxr=cv.width/(maxX-minX||1), syr=cv.height/(maxY-minY||1);
+  BASE_SCALE=Math.min(sxr,syr)*0.92;
+  // 自动取景时以最近一帧的单位质心为视图中心；手动模式(拖动/缩放)不覆盖 PAN，避免拖动后回弹
+  const last=TICKS[TICKS.length-1];
+  if(autoFit && last){
+    let cx=0,cy=0,n=0;
+    if(last.core){cx+=last.core.pos[0];cy+=last.core.pos[1];n++;}
+    last.units.forEach(u=>{cx+=u.pos[0];cy+=u.pos[1];n++;});
+    if(n){PAN.x=cx/n; PAN.y=cy/n;}
+  }
+  // 跟随 Core：锁定视图中心到最新 Core 坐标（Core 会随信标迁移）
+  if(trackCore && last && last.core){ PAN.x=last.core.pos[0]; PAN.y=last.core.pos[1]; }
+}
+function viewScale(){ return BASE_SCALE * (autoFit?1:zoom); }
+function sx(x){ const c=autoFit?(BOUNDS.minX+BOUNDS.maxX)/2:PAN.x; return cv.width/2+(x-c)*viewScale(); }
+function sy(y){ const c=autoFit?(BOUNDS.minY+BOUNDS.maxY)/2:PAN.y; return cv.height/2+(y-c)*viewScale(); }
+// 当前 tick 的真实视野（用于把"蓝=可见"与"灰=已探索记忆"区分开）。
+// 规则：私有视野 = 所有存活己方对象各自视野(曼哈顿半径)的并集；
+// 障碍遮挡走整数直线(类 Bresenham)：障碍格本身可见，它后面看不见；
+// 射线正好从两格共用的角穿过时两侧都算经过，任一侧有障碍即挡住。
+const _VIS={worker:3, vanguard:4, ranger:5, core:5};
+function losVisible(ox,oy,tx,ty,obsSet){
+  // 目标格 (tx,ty) 是否从 (ox,oy) 可见（考虑障碍遮挡）。
+  // 标准 Bresenham：按主轴(较长轴)推进，每轮只走一格、误差收敛，必然终止。
+  // 旧实现每轮无条件 x+=sxstep，只适合水平线；陡线(ady>adx)会越过目标点发散 → 死循环 → 页面空白。
+  if(ox===tx && oy===ty) return true;
+  const dx=Math.abs(tx-ox), dy=Math.abs(ty-oy);
+  const sxstep = tx>ox?1:(tx<ox?-1:0);
+  const systep = ty>oy?1:(ty<oy?-1:0);
+  let x=ox, y=oy, err = dx - dy;
+  while(true){
+    if(err > 0){ x += sxstep; err -= dy; }
+    else        { y += systep; err += dx; }
+    if(x===tx && y===ty) return true;        // 到达目标：即便目标是障碍也可见
+    if(obsSet.has(x+","+y)) return false;     // 中间障碍挡住其后视线
+  }
+}
+let _visCache = { tick:-1, set:null, obsKey:"" };
+function computeVisible(t, obs){
+  // 按 tick 缓存（动画帧很多，tick 不变时直接复用）。obs 用于遮挡。
+  const obsKey = (obs&&obs.length)||0;
+  if(_visCache.tick===t.tick && _visCache.set && _visCache.obsKey===obsKey) return _visCache.set;
+  const obsSet = new Set((obs||[]).map(p=>p[0]+","+p[1]));
+  const vis = new Set();
+  const add=(cx,cy,r)=>{
+    for(let dx=-r;dx<=r;dx++)for(let dy=-r;dy<=r;dy++){
+      if(Math.abs(dx)+Math.abs(dy)>r) continue;
+      if(losVisible(cx,cy,cx+dx,cy+dy,obsSet)) vis.add((cx+dx)+","+(cy+dy));
+    }
+  };
+  (t.units||[]).forEach(u=>add(u.pos[0], u.pos[1], _VIS[(u.type||"").toUpperCase()]||3));
+  if(t.core) add(t.core.pos[0], t.core.pos[1], 5);
+  _visCache = { tick:t.tick, set:vis, obsKey };
+  return vis;
+}
+// 低缩放降级：判断某 32 格扇区是否含可见格（决定涂蓝还是涂灰）
+function sectorHasVisible(k, vis, ss){
+  const a=k.split(","); const bx=+a[0]*ss, by=+a[1]*ss;
+  for(let dx=0;dx<ss;dx++)for(let dy=0;dy<ss;dy++) if(vis.has((bx+dx)+","+(by+dy))) return true;
+  return false;
+}
+
+function getFogPat(){
+  // 未探索迷雾：深色底 + 浅斜纹，和已探索的亮蓝块形成强对比（战争迷雾风格）
+  if(getFogPat._p) return getFogPat._p;
+  const c=document.createElement("canvas"); c.width=8; c.height=8;
+  const g=c.getContext("2d");
+  g.fillStyle="#0c1119"; g.fillRect(0,0,8,8);
+  g.strokeStyle="rgba(255,255,255,0.045)"; g.lineWidth=1;
+  g.beginPath(); g.moveTo(-1,9); g.lineTo(9,-1); g.moveTo(3,9); g.lineTo(9,3); g.stroke();
+  getFogPat._p=ctx.createPattern(c,"repeat");
+  return getFogPat._p;
+}
+function draw(){
+  let t;
+  if(TICKS.length) t=TICKS[TICKS.length-1];
+  // 分片流为空时回退到地图快照：仍画出已探索区/障碍/核心/信标，避免整片纯黑
+  else if(MAPBASE) t={core: MAPBASE.core?{pos:MAPBASE.core}:null, obstacles:MAPBASE.obstacles||[], units:[], enemies:[], resources_cells:[], events:[]};
+  if(!t) return;
+  ctx.clearRect(0,0,cv.width,cv.height);
+  // 未探索 = 纯黑底；已探索 = 浅蓝逐格覆盖 + 白色描边（清晰边界）。
+  const v=viewScale();
+  const fogOn = document.getElementById("showExplored").checked && MAPBASE && MAPBASE.explored_cells && MAPBASE.explored_cells.length;
+  // 障碍来源优先级（提前解析，供下方视野遮挡计算使用）：永久快照 ∪ 当前帧
+  let obs=t.obstacles;
+  if(!obs){ for(let i=TICKS.length-1;i>=0;i--){ if(TICKS[i].obstacles){obs=TICKS[i].obstacles;break;} } }
+  if(MAPBASE && MAPBASE.obstacles && MAPBASE.obstacles.length){
+    if(!obs || MAPBASE.obstacles.length>=obs.length) obs=MAPBASE.obstacles;
+  }
+  ctx.fillStyle = "#000000";            // 未探索区域：纯黑填充
+  ctx.fillRect(0,0,cv.width,cv.height);
+  // （已移除全局网格线——它会在已探索区边缘形成明显的方形白框轮廓）
+  // 战争迷雾三层：黑=未探索，灰=已探索(记忆)，蓝=当前视野可见。每格白边。
+  if(fogOn){
+    const cells=MAPBASE.explored_cells;
+    const vis=computeVisible(t, obs);        // 当前 tick 真实视野（含障碍遮挡，蓝）
+    // 默认逐格描白边；仅极端缩放 + 超多格子时退化为扇区填充（不描整块白边，避免大方块白框）。
+    const lowDetail = v<0.5 && cells.length>20000;
+    if(lowDetail){
+      const ss=MAPBASE.sector_size||32;
+      const seen=new Set();
+      cells.forEach(p=>{
+        const k=Math.floor(p[0]/ss)+","+Math.floor(p[1]/ss);
+        if(seen.has(k)) return; seen.add(k);
+        const x0=sx(Math.floor(p[0]/ss)*ss), y0=sy(Math.floor(p[1]/ss)*ss), w=ss*v;
+        const blue = sectorHasVisible(k, vis, ss);
+        ctx.fillStyle = blue ? "rgba(64,140,235,0.6)" : "rgba(118,118,130,0.55)";
+        ctx.fillRect(x0,y0,w,w);   // 仅填充，不描白边
+      });
+    }else{
+      ctx.strokeStyle="rgba(255,255,255,0.13)"; ctx.lineWidth=1;
+      cells.forEach(p=>{
+        const key=p[0]+","+p[1];
+        ctx.fillStyle = vis.has(key) ? "rgba(64,140,235,0.62)" : "rgba(118,118,130,0.55)";
+        ctx.fillRect(sx(p[0]), sy(p[1]), v, v);
+        ctx.strokeRect(sx(p[0]), sy(p[1]), v, v);   // 每格淡白边
+      });
+    }
+  }
+  // （已移除放大时的全覆盖白网格——会在已探索区边缘形成方形白框）
+  // （障碍已在上文解析，供视野遮挡使用）
+  // 障碍(石头)：在格子内居中的实心方块（不超出格子）
+  if(obs){ ctx.fillStyle="#9aa7bd"; obs.forEach(p=>{ const x=sx(p[0])+v/2, y=sy(p[1])+v/2, r=Math.max(1.5, v*0.42); ctx.fillRect(x-r, y-r, r*2, r*2); }); }
+  if(document.getElementById("showRes").checked){
+    // 当前视野内资源：亮绿实心圆，格子内、带白边
+    (t.resources_cells||[]).forEach(p=>{ const x=sx(p[0])+v/2, y=sy(p[1])+v/2, r=Math.max(2, v*0.34);
+      ctx.fillStyle="rgba(57,217,138,0.95)"; ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill();
+      ctx.strokeStyle="#fff"; ctx.lineWidth=1; ctx.stroke(); });
+  }
+  // 记忆资源：已探索并持久化、但当前不在视野内的资源（蓝钻，格子内、带白边）。
+  // 后端 MapMemory.resource_memory 在看到资源时写入 map.json、采完/到访无资源时清除。
+  if(document.getElementById("showMemRes").checked && MAPBASE && MAPBASE.resource_memory){
+    const live = new Set((t.resources_cells||[]).map(p=>p[0]+","+p[1]));
+    MAPBASE.resource_memory.forEach(r=>{
+      const key=r[0]+","+r[1];
+      if(live.has(key)) return;            // 当前可见的用绿点画了，避免重叠
+      const x=sx(r[0])+v/2, y=sy(r[1])+v/2, s=Math.max(2.5, v*0.4);
+      ctx.fillStyle="rgba(57,217,138,0.95)";   // 记忆资源也用绿色（空心菱形，区别于当前视野的实心绿点）
+      ctx.beginPath(); ctx.moveTo(x,y-s); ctx.lineTo(x+s,y); ctx.lineTo(x,y+s); ctx.lineTo(x-s,y); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle="#fff"; ctx.lineWidth=1; ctx.stroke();
+    });
+  }
+  if(document.getElementById("showTrails").checked){
+    const fw=autoFit?80:(zoom<0.6?260:40);
+    const recent=TICKS.slice(-fw);
+    const byId={};
+    recent.forEach(tt=>tt.units.forEach(u=>{(byId[u.id]||=[]).push(u.pos);}));
+    Object.keys(byId).forEach(id=>{
+      const pts=byId[id]; if(pts.length<2) return;
+      ctx.strokeStyle=unitColor(id); ctx.globalAlpha=0.45; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(sx(pts[0][0])+v/2,sy(pts[0][1])+v/2);
+      for(let i=1;i<pts.length;i++) ctx.lineTo(sx(pts[i][0])+v/2,sy(pts[i][1])+v/2);
+      ctx.stroke(); ctx.globalAlpha=1;
+    });
+  }
+  // 我方 Core：蓝色五角星
+  if(t.core){ drawCoreStar(sx(t.core.pos[0])+v/2, sy(t.core.pos[1])+v/2, v, "#4cc2ff", "#fff"); }
+  // 巡逻范围参考圈：以 Core 为中心的三层巡逻半径（外36×36/中20×20/内10×10），蓝色系（绿仅资源）
+  if(document.getElementById("showPatrolRings").checked && t.core){
+    const ccx=sx(t.core.pos[0])+v/2, ccy=sy(t.core.pos[1])+v/2;
+    const rings=[[18,"rgba(120,170,255,0.45)","外巡逻36"],[10,"rgba(76,194,255,0.45)","中巡逻20"],[5,"rgba(160,210,255,0.55)","内巡逻10"]];
+    ctx.save(); ctx.setLineDash([6,6]); ctx.lineWidth=1.4;
+    rings.forEach(([r,col,label])=>{
+      const rad=r*v;
+      ctx.strokeStyle=col;
+      ctx.beginPath(); ctx.arc(ccx,ccy,rad,0,7); ctx.stroke();
+      ctx.fillStyle=col; ctx.font="bold 10px sans-serif"; ctx.textAlign="center";
+      ctx.fillText(label, ccx, ccy-rad-3);
+    });
+    ctx.setLineDash([]); ctx.restore();
+  }
+  // 禁止/危险区域（战斗单位阵亡触发）：禁止区红虚线圆(探索单位绕行)、危险区橙实线圆(全员清场)
+  if(t.danger_zones && t.danger_zones.length){
+    ctx.save(); ctx.lineWidth=1.6; ctx.font="bold 10px sans-serif"; ctx.textAlign="center";
+    t.danger_zones.forEach(z=>{
+      const cx=sx(z.center[0])+v/2, cy=sy(z.center[1])+v/2, rad=Math.max(3, z.radius*v);
+      if(z.state==="forbidden"){ ctx.strokeStyle="rgba(255,80,80,0.9)"; ctx.setLineDash([5,4]); }
+      else { ctx.strokeStyle="rgba(255,170,40,0.95)"; ctx.setLineDash([]); }
+      ctx.beginPath(); ctx.arc(cx,cy,rad,0,7); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = z.state==="forbidden" ? "rgba(255,80,80,0.95)" : "rgba(255,170,40,1)";
+      ctx.fillText(z.state==="forbidden" ? "禁止区" : "危险区("+z.recorded+")", cx, cy-rad-3);
+    });
+    ctx.restore();
+  }
+  // 死亡标记（红色❌，持续约 60 tick 后淡出消失）
+  {
+    const DEATH_TTL = 60; // 存活 tick 数
+    const curTick = t.tick || 0;
+    // 收集最近所有帧的死亡事件（跨帧累积显示）
+    const allDeaths = [];
+    TICKS.slice(-DEATH_TTL).forEach(tt=>{
+      if(tt.death_events) tt.death_events.forEach(d=>{ d._srcTick=tt.tick; allDeaths.push(d); });
+    });
+    allDeaths.forEach(d=>{
+      const age = curTick - (d._srcTick||curTick);
+      if(age<0||age>DEATH_TTL) return;
+      const alpha = Math.max(0.15, 1 - age/DEATH_TTL); // 线性淡出
+      const x=sx(d.pos[0])+v/2, y=sy(d.pos[1])+v/2;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      // 红色❌背景圆
+      ctx.fillStyle = "rgba(255,26,44,"+alpha+")";
+      ctx.beginPath(); ctx.arc(x,y,v*0.45,0,7); ctx.fill();
+      // ❌符号
+      ctx.strokeStyle="#fff"; ctx.lineWidth=Math.max(1.5, v*0.08);
+      const s=v*0.28;
+      ctx.beginPath(); ctx.moveTo(x-s,y-s); ctx.lineTo(x+s,y+s); ctx.moveTo(x+s,y-s); ctx.lineTo(x-s,y+s); ctx.stroke();
+      // 兵种标签
+      const ut_cn = {"VANGUARD":"先锋","RANGER":"游侠"}[d.unit_type]||"";
+      if(ut_cn){
+        ctx.fillStyle="rgba(255,255,255,"+(alpha*0.9)+")";
+        ctx.font="bold "+Math.max(8, v*0.22)+"px sans-serif"; ctx.textAlign="center";
+        ctx.fillText(ut_cn, x, y+v*0.65);
+      }
+      ctx.restore();
+    });
+  }
+  // 冠军信标（arena_hero 中世界坐标固定 (0,0)，由帧数据驱动；缺省回退 (0,0)）
+  { const bpos = (t.beacon && Array.isArray(t.beacon)) ? t.beacon : [0,0];
+    const bx=sx(bpos[0])+v/2,by=sy(bpos[1])+v/2; const pr=Math.max(3,v*0.85);
+    ctx.globalAlpha=0.25+0.2*Math.abs(Math.sin(Date.now()/400)); ctx.fillStyle="#ffe14c";
+    ctx.beginPath(); ctx.arc(bx,by,pr*1.4,0,7); ctx.fill(); ctx.globalAlpha=1;
+    ctx.fillStyle="#ffe14c"; ctx.strokeStyle="#7a5b00"; ctx.lineWidth=1.2;
+    ctx.beginPath(); ctx.moveTo(bx,by-pr); ctx.lineTo(bx+pr,by); ctx.lineTo(bx,by+pr); ctx.lineTo(bx-pr,by); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle="#3a2a00"; ctx.font="bold 11px sans-serif"; ctx.textAlign="center"; ctx.fillText("B",bx,by+4); }
+  // 敌方单位：红，按兵种画外形（worker圆/vanguard方/ranger三角）
+  t.enemies.forEach(e=>{ const x=sx(e.pos[0])+v/2,y=sy(e.pos[1])+v/2;
+    drawUnitShape(x, y, v, e.type, ENEMY_COLOR, "#fff"); });
+  // 我方单位终点目标：队色虚线连接单位→目标格 + 目标格队色方向箭头（开关 showTargets）
+  if(document.getElementById("showTargets").checked){
+    t.units.forEach(u=>{
+      if((u.type||"").toUpperCase()==="CORE") return;
+      if(!u.target) return;
+      const x=sx(u.pos[0])+v/2, y=sy(u.pos[1])+v/2;
+      const tx=sx(u.target[0])+v/2, ty=sy(u.target[1])+v/2;
+      const col = friendColor(u.type);
+      ctx.save();
+      ctx.strokeStyle=col; ctx.globalAlpha=0.85; ctx.lineWidth=1.4;
+      ctx.setLineDash([4,4]);
+      ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(tx,ty); ctx.stroke();
+      ctx.setLineDash([]);
+      // 目标格：队色小箭头，指向行进方向（单位→目标）
+      const tdx=tx-x, tdy=ty-y, tl=Math.hypot(tdx,tdy);
+      if(tl>0.5){
+        const ux=tdx/tl, uy=tdy/tl, ps=Math.max(4, v*0.55);
+        const px=-uy, py=ux;
+        ctx.fillStyle=col;
+        ctx.beginPath();
+        ctx.moveTo(tx+ux*ps, ty+uy*ps);
+        ctx.lineTo(tx-ux*ps*0.2+px*ps*0.55, ty-uy*ps*0.2+py*ps*0.55);
+        ctx.lineTo(tx-ux*ps*0.2-px*ps*0.55, ty-uy*ps*0.2-py*ps*0.55);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.restore();
+    });
+  }
+  // 我方单位：队色，外形与敌方一致（仅颜色区分敌我）；带资源的工人描白边
+  t.units.forEach(u=>{ if((u.type||"").toUpperCase()==="CORE")return; const x=sx(u.pos[0])+v/2,y=sy(u.pos[1])+v/2;
+    const col = friendColor(u.type);
+    drawUnitShape(x, y, v, u.type, col, u.cargo>0 ? "#fff" : null);
+    // 移动方向箭头：队色小三角，指向本 tick 实际移动的那一格
+    if(u.dir){ const dx=u.dir[0], dy=u.dir[1], dl=Math.hypot(dx,dy);
+      if(dl>0){ const ux=dx/dl, uy=dy/dl, s=Math.max(3, v*0.40);
+        const ax=x+ux*v*0.62, ay=y+uy*v*0.62;
+        const px=-uy, py=ux;
+        ctx.fillStyle=col;
+        ctx.beginPath();
+        ctx.moveTo(ax+ux*s, ay+uy*s);
+        ctx.lineTo(ax+px*s*0.7, ay+py*s*0.7);
+        ctx.lineTo(ax-px*s*0.7, ay-py*s*0.7);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+  });
+  // 我方单位决策标签：队色小字画在单位上方（开关 showTags）。深色描边保证
+  // 在任意底色上都可读；低缩放时字号收敛避免糊成一片。
+  if(document.getElementById("showTags").checked){
+    t.units.forEach(u=>{
+      if((u.type||"").toUpperCase()==="CORE") return;
+      const tag = u.tag;
+      if(!tag) return;
+      const cn = tagCN(tag);
+      if(!cn) return;
+      const x=sx(u.pos[0])+v/2, y=sy(u.pos[1])+v/2;
+      const fs = Math.max(10, Math.min(15, v*0.40));
+      ctx.save();
+      ctx.font = "bold "+fs+"px sans-serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+      // 深色描边底 + 队色填充
+      ctx.lineWidth = Math.max(2.5, fs*0.32);
+      ctx.strokeStyle = "rgba(7,11,18,0.9)";
+      ctx.strokeText(cn, x, y - v*0.55);
+      ctx.fillStyle = friendColor(u.type);
+      ctx.fillText(cn, x, y - v*0.55);
+      ctx.restore();
+    });
+  }
+  // 敌方敌情标注（来自 stream/enemy_marks.json）
+  if(ENEMY_MARKS){
+    // 三角定位的敌方核心大致区域：红色五角星 + 红色不确定环
+    (ENEMY_MARKS.enemy_core_zones||[]).forEach(z=>{
+      const xc=sx(z.pos[0])+v/2, yc=sy(z.pos[1])+v/2, R=z.radius*v;
+      ctx.fillStyle="rgba(255,77,94,0.16)";
+      ctx.beginPath(); ctx.arc(xc, yc, R, 0, 7); ctx.fill();
+      ctx.strokeStyle="rgba(255,77,94,0.6)"; ctx.lineWidth=1.5; ctx.stroke();
+      drawCoreStar(xc, yc, v, "#ff4d5e", "#fff");
+      ctx.fillStyle="rgba(255,110,120,0.95)"; ctx.font="bold 10px sans-serif"; ctx.textAlign="center";
+      ctx.fillText("敌核心", xc, yc-R-3);
+    });
+    // 敌方消失点：橙色对应兵种图标（圆=工人/方=先锋/三角=游侠/五角星=核心）。
+    // 到达该格且周围无敌人后由后端取消（见后端 EnemyMemory.clear_resolved_contacts）。
+    (ENEMY_MARKS.enemy_lost||[]).forEach(lc=>{
+      const x=sx(lc.pos[0])+v/2, y=sy(lc.pos[1])+v/2;
+      if((lc.unit_type||"").toUpperCase()==="CORE") drawCoreStar(x, y, v, "#ff9628", "#fff");
+      else drawUnitShape(x, y, v, lc.unit_type, "#ff9628", "#fff");
+    });
+  }
+}
+
+function activeFilters(){ const f={}; document.querySelectorAll("#filters input").forEach(c=>f[c.value]=c.checked); return f; }
+
+function renderStats(){
+  const t = TICKS.length ? TICKS[TICKS.length-1] : null;
+  if(!t){
+    if(MAPBASE){
+      document.getElementById("sTick").textContent=MAPBASE.tick;
+      document.getElementById("sRes").textContent="?";
+      document.getElementById("sHp").textContent="-";
+      document.getElementById("sUnits").textContent="-";
+      document.getElementById("sEnemy").textContent="-";
+    }
+    document.getElementById("sW").textContent="–"; document.getElementById("sV").textContent="–";
+    document.getElementById("sR").textContent="–"; document.getElementById("nextProdBox").innerHTML="";
+    return;
+  }
+  document.getElementById("sTick").textContent=t.tick;
+  document.getElementById("sRes").textContent=t.resources;
+  document.getElementById("sHp").textContent=t.core?t.core.hp+"/"+t.core.shield:"-";
+  document.getElementById("sUnits").textContent=t.units.filter(u=>u.type!=="core").length;
+  document.getElementById("sEnemy").textContent=t.enemies.length;
+  // 单位状态面板
+  const uc = t.unit_counts||{};
+  document.getElementById("sW").textContent=uc.worker!=null?uc.worker:"–";
+  document.getElementById("sV").textContent=uc.vanguard!=null?uc.vanguard:"–";
+  document.getElementById("sR").textContent=uc.ranger!=null?uc.ranger:"–";
+  const np = t.next_production;
+  if(np){
+    const np_cn={"VANGUARD":"先锋","RANGER":"游侠","WORKER":"工人"}[np]||np;
+    const np_col=FRIEND_COLORS[np]||"#4cc2ff";
+    document.getElementById("nextProdBox").innerHTML=
+      '<span style="font-size:11px;color:var(--muted)">下一步:</span>'+
+      '<span class="tag" style="background:'+np_col+'">'+np_cn+'</span>';
+  } else {
+    document.getElementById("nextProdBox").innerHTML=
+      '<span style="font-size:11px;color:var(--muted)">下一步: –</span>';
+  }
+}
+
+function renderFeed(){
+  const feed=document.getElementById("feed"); feed.innerHTML="";
+  const f=activeFilters();
+  const events=[];
+  TICKS.slice(-120).forEach(t=>t.events.forEach(e=>{ if(f[e.type]) events.push({tick:t.tick,e}); }));
+  events.slice(-260).forEach(({tick,e})=>{
+    const m=EV_META[e.type]||{label:e.type,color:"#8b97ad"};
+    const d=document.createElement("div"); d.className="e"; d.style.borderLeftColor=m.color;
+    d.innerHTML=`<span style="color:var(--muted)">t${tick}</span> <span class="tag" style="background:${m.color}">${m.label}</span> @(${e.pos[0]},${e.pos[1]}) ${e.detail||""}`;
+    feed.appendChild(d);
+  });
+  feed.scrollTop=feed.scrollHeight;
+}
+
+function tick(){
+  if(paused) return;
+  if(TICKS.length){ draw(); renderStats(); renderFeed();
+    const ago=((Date.now()-lastUpdate)/1000).toFixed(1);
+    document.getElementById("upd").textContent="更新于 "+ago+"s 前 · "+TICKS.length+" 帧";
+  } else if(MAPBASE){   // 分片流未就绪：仍用地图快照渲染，避免整片纯黑
+    draw(); renderStats();
+    document.getElementById("upd").textContent="地图快照 t"+MAPBASE.tick+"（等待实时分片流…）";
+  }
+  setTimeout(poll, +document.getElementById("rate").value);
+}
+
+async function poll(){
+  try{
+    // 尝试拉取 shard 索引；index.json 可能不存在（桥接尚未 flush 首个 shard），
+    // 此时降级为仅依赖 latest.json（实时帧）+ map.json（地图快照），不中断渲染。
+    let urls=[];
+    let idx_ok=false;
+    try{
+      const ir=await fetch(ah_url(INDEX_URL)+"?_="+Date.now());
+      if(ir.ok){
+        idx_ok=true;
+        const idx=await ir.json();
+        const min=idx.kept_min??0, max=idx.kept_max??0;
+        for(let s=min;s<=max;s++) urls.push(SHARD_GLOB+String(s).padStart(5,"0")+".jsonl");
+      }
+    }catch(e){}
+    // 地图层快照与分片流并行拉取（快照小且原子替换，读到即完整）
+    fetch(ah_url(MAP_URL)+"?_="+Date.now()).then(r=>r.ok?r.json():null)
+      .then(m=>{ if(m) MAPBASE=m; }).catch(()=>{});
+    // 敌方敌情标注（消失点 + 三角定位核心区），每 tick 刷新
+    fetch(ah_url(ENEMY_MARKS_URL)+"?_="+Date.now()).then(r=>r.ok?r.json():null)
+      .then(m=>{ if(m) ENEMY_MARKS=m; }).catch(()=>{});
+    let arr=[];
+    if(idx_ok && urls.length){
+      const texts=await Promise.all(urls.map(u=>fetch(ah_url(u)+"?_="+Date.now()).then(r=>r.ok?r.text():"").catch(()=>"")));
+      let lines=[];
+      texts.forEach(t=>{ t.split("\n").filter(l=>l.trim()).forEach(l=>lines.push(l)); });
+      arr=lines.map(l=>{try{return JSON.parse(l)}catch(e){return null}}).filter(Boolean);
+    }
+    // 实时帧：优先用 stream/latest.json（每 tick 写），解决分片流 200 帧缓冲导致的
+    // 「地图一直不变 / 快走不更新」。latest 比最后一帧新则替换/追加为实时帧。
+    try{
+      const lr=await fetch(ah_url("stream/latest.json")+"?_="+Date.now());
+      if(lr.ok){ const lj=await lr.json();
+        if(lj && lj.tick!=null){
+          if(arr.length && arr[arr.length-1].tick >= lj.tick) arr[arr.length-1]=lj;
+          else arr.push(lj);
+        } }
+    }catch(e){}
+    if(arr.length){ TICKS=arr.slice(-MAXTICKS); lastUpdate=Date.now(); computeBounds(); }
+    document.getElementById("drop").style.display="none";
+  }catch(e){
+    document.getElementById("drop").style.display="flex";
+  }
+  tick();
+}
+
+function buildFilters(){
+  const box=document.getElementById("filters"); box.innerHTML="";
+  ORDER.forEach(type=>{ const m=EV_META[type];
+    const l=document.createElement("label");
+    l.innerHTML=`<input type="checkbox" value="${type}" checked><span class="sw" style="background:${m.color}"></span>${m.label}`;
+    box.appendChild(l); });
+  box.querySelectorAll("input").forEach(c=>c.onchange=()=>renderFeed());
+}
+
+function setZoom(z){
+  zoom=Math.max(0.1, Math.min(12, z));   // 最小比例放宽到 0.1，可看更大全局
+  autoFit=false;
+  document.getElementById("zTxt").textContent=zoom.toFixed(2)+"×";
+  computeBounds(); draw();
+}
+document.getElementById("pause").onclick=()=>{ paused=!paused; document.getElementById("pause").textContent=paused?"▶ 继续":"⏸ 暂停";
+  document.getElementById("liveTxt").textContent=paused?"暂停":"LIVE";
+  document.querySelector(".dot").style.animation=paused?"none":"pulse"; };
+document.getElementById("rate").oninput=e=>document.getElementById("rateTxt").textContent=e.target.value+"ms";
+document.getElementById("zIn").onclick=()=>setZoom(zoom*1.3);
+document.getElementById("zOut").onclick=()=>setZoom(zoom/1.3);
+document.getElementById("zFit").onclick=()=>{ autoFit=true; trackCore=false; zoom=1; document.getElementById("zTxt").textContent="适配"; computeBounds(); draw(); };
+cv.addEventListener("wheel",e=>{ e.preventDefault(); setZoom(zoom*(e.deltaY<0?1.15:0.87)); },{passive:false});
+// 定位Core：回到 Core（冠军信标侧）位置。再次点击关闭跟随。Core 会向信标迁移，
+// 所以开启后每帧都把视图中心锁在最新 Core 坐标上（trackCore）。
+document.getElementById("zCore").onclick=()=>{
+  const last=TICKS[TICKS.length-1];
+  if(trackCore){ trackCore=false; document.getElementById("zCore").classList.remove("on"); document.getElementById("zTxt").textContent=zoom.toFixed(2)+"×"; return; }
+  if(last && last.core){ trackCore=true; autoFit=false; PAN.x=last.core.pos[0]; PAN.y=last.core.pos[1];
+    document.getElementById("zCore").classList.add("on"); computeBounds(); draw(); }
+};
+// 拖动时关闭跟随，避免与手动平移打架
+cv.addEventListener("mousedown",()=>{ if(trackCore){ trackCore=false; document.getElementById("zCore").classList.remove("on"); } });
+
+// 拖动平移：按住拖动移动视图中心（PAN 为世界坐标中心）
+let dragging=false, dragStart=null, panStart=null;
+function worldFromMouse(mx,my){
+  // 鼠标坐标 → 世界坐标（与 sx/sy 互逆）
+  const c=autoFit?(BOUNDS.minX+BOUNDS.maxX)/2:PAN.x;
+  const cy=autoFit?(BOUNDS.minY+BOUNDS.maxY)/2:PAN.y;
+  const s=viewScale();
+  const wx=c+(mx-cv.width/2)/s;
+  const wy=cy-(my-cv.height/2)/s;
+  return [wx,wy];
+}
+cv.addEventListener("mousedown",e=>{
+  dragging=true; cv.classList.add("grabbing");
+  autoFit=false; document.getElementById("zTxt").textContent=zoom.toFixed(2)+"×";
+  dragStart={x:e.offsetX,y:e.offsetY};
+  panStart={x:PAN.x,y:PAN.y};
+});
+cv.addEventListener("mousemove",e=>{
+  if(!dragging) return;
+  const s=viewScale();
+  const dx=(e.offsetX-dragStart.x)/s;
+  const dy=(e.offsetY-dragStart.y)/s;
+  PAN.x=panStart.x-dx;   // 鼠标右移 → 视图右移 → 世界中心左移
+  PAN.y=panStart.y-dy;   // 鼠标下移 → 视图下移 → 世界中心上移
+  draw();
+});
+window.addEventListener("mouseup",()=>{ if(dragging){dragging=false; cv.classList.remove("grabbing");} });
+window.addEventListener("mouseleave",()=>{ if(dragging){dragging=false; cv.classList.remove("grabbing");} });
+document.getElementById("file").onchange=e=>{
+  const f=e.target.files[0]; if(!f)return; const r=new FileReader();
+  r.onload=()=>{ const arr=r.result.split("\n").filter(l=>l.trim()).map(l=>{try{return JSON.parse(l)}catch(_){return null}}).filter(Boolean);
+    TICKS=arr.slice(-MAXTICKS); lastUpdate=Date.now(); computeBounds(); draw(); renderStats(); renderFeed(); };
+  r.readAsText(f);
+};
+
+buildFilters();
+fitCanvas();
+poll();
+</script>
+</body>
+</html>

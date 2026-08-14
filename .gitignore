@@ -1,0 +1,50 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+
+# ===== 运行日志 / 状态快照 =====
+*.log
+.arena_state.json
+.arena_state.json.bak
+.active_agent
+stream_local_test/
+
+# ===== 凭据 / 本地配置（切勿提交）=====
+.env
+.env.*
+!.env.example
+arena_key.txt
+
+# ===== 运行时 stream（地图/事件流/实时调参均为运行期产物，可重新生成）=====
+stream/
+
+# ===== 项目数据（WorkBuddy 内部，禁止提交）=====
+.workbuddy/
+
+# ===== 备份文件 =====
+*.orig
+*.bak
+
+# ===== 测试/调试垃圾 =====
+.test_v3/
+.test_verify/
+.test_verify2/
+stubs/
+_sim.py
+_sim2.py
+event_log.json
+event_stream.jsonl
+event_stream_sample.jsonl
+
+# ===== 进化结果与快照（arena-evolve 运行产物）=====
+results/
+
+# ===== 编辑器/系统 =====
+.DS_Store
+.idea/
+.vscode/
