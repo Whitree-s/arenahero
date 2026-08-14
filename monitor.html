@@ -49,8 +49,8 @@
   canvas.grabbing { cursor:grabbing; }
   .col { display:flex; flex-direction:column; gap:10px; min-height:0; }
   .side-left { width:320px; flex:0 0 auto;
-    /* 左列：监控设置(7) / 单位状态(3) */
-    display:grid; grid-template-rows:7fr 3fr; gap:10px; }
+    /* 左列：监控设置 / 单位状态(下方窗口占更多高度) */
+    display:grid; grid-template-rows:4fr 6fr; gap:10px; }
   /* 右列：事件过滤(上) + 实时事件流(下，占满剩余空间) */
   .side-right { width:360px; flex:0 0 auto;
     display:grid; grid-template-rows:auto 1fr; gap:10px; min-height:0; }
@@ -236,12 +236,11 @@
         <span><svg width="18" height="18" viewBox="0 0 20 20"><polygon points="10,3 17,17 3,17" fill="#c08bff" stroke="#fff" stroke-width="1"/></svg>游侠</span>
         <span><svg width="18" height="18" viewBox="0 0 20 20"><path d="M10,2 L11.8,7.5 L17.6,7.5 L12.9,10.9 L14.7,16.5 L10,13 L5.3,16.5 L7.1,10.9 L2.4,7.5 L8.2,7.5 Z" fill="#4cc2ff" stroke="#fff" stroke-width="1"/></svg>核心</span>
       </div>
-      <div class="sec sec-note hint">滚轮缩放 · 适配=自动取景 · 绿◆=记忆资源(离开视野仍锁定派遣) · 绿●=当前视野资源 · 橙图标=敌方消失点(按兵种) · 单位上方小字=决策标签(arena-evolve 每 tick 决策的 branch)</div>
     </div>
 
     <!-- 单位详细列表面板（可折叠兵种段，每单位显示 HP 条 / 动作标签 / 坐标） -->
     <div class="card" style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:0; display:flex; flex-direction:column; overflow:hidden;">
-      <div class="unitlist" id="unitList">
+      <div class="unitlist" id="unitList" style="overflow-y:auto; flex:1 1 0; min-height:0;">
         <div style="padding:10px 12px;color:var(--muted);font-size:12px;text-align:center;">等待数据…</div>
       </div>
     </div>
@@ -832,8 +831,9 @@ function renderUnitList(t){
     RANGER: '<svg width="14" height="14" viewBox="0 0 20 20"><polygon points="10,3 17,17 3,17" fill="#c08bff" stroke="#fff" stroke-width="1"/></svg>'
   };
 
-  // HP 条颜色判定
+  // HP 条颜色判定（内联用，确保颜色一定渲染）
   function hpClass(hp, max){ return hp/max <= 0.33 ? "low" : hp/max <= 0.66 ? "mid" : ""; }
+  function hpColor(hp, max){ return hp/max <= 0.33 ? "#ff4d5e" : hp/max <= 0.66 ? "#ffb24d" : "#39d98a"; }
 
   let html = '';
 
@@ -843,7 +843,7 @@ function renderUnitList(t){
     const cmax = 5; // Core 最大 HP
     html += `<div class="ul-section">
       <div class="ul-head">${ICONS.CORE}<span class="name">Core</span>
-        <span class="hp-bar" style="min-width:50px;max-width:90px;height:8px;"><span class="hp-fill ${hpClass(chp,cmax)}" style="width:${Math.max(0,(chp/cmax)*100)}%"></span></span>
+        <span class="hp-bar" style="min-width:50px;max-width:90px;height:8px;"><span class="hp-fill" style="width:${Math.max(0,(chp/cmax)*100)}%;background:${hpColor(chp,cmax)}"></span></span>
         <span style="font-size:11px;font-weight:700;color:#4cc2ff">盾${csh}</span>
         ${csh>0?'<span class="ul-tag" style="background:rgba(76,194,255,0.2);color:#4cc2ff">驻守</span>':''}
         <span class="ul-pos">[${cpos[0]},${cpos[1]}]</span></div></div>`;
@@ -881,7 +881,7 @@ function renderUnitList(t){
       const tagCol = type==="WORKER" && cargo > 0 ? "#39d98a" : tagColor(u.tag);
       html += `<div class="ul-row">
         <span class="ul-uid">${uid}</span>
-        <span class="hp-bar" style="min-width:48px"><span class="hp-fill ${hpClass(hp,maxHp)}" style="width:${Math.max(2,(hp/maxHp)*100)}%"></span></span>
+        <span class="hp-bar" style="min-width:48px"><span class="hp-fill" style="width:${Math.max(2,(hp/maxHp)*100)}%;background:${hpColor(hp,maxHp)}"></span></span>
         <span class="ul-tag" style="background:${tagCol};color:#04121f">${displayTag}</span>
         <span class="ul-pos">[${pos[0]},${pos[1]}]</span></div>`;
     });
