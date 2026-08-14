@@ -203,6 +203,9 @@ class HeuristicStrategy(Strategy):
         self._home_guards = set()
         self._block_workers = set()   # 本 Tick 负责堵路的 Worker uid
         self._attack_point = None     # 当前进攻目标点（敌人 core/单位位置）
+        self._combat_clusters = []    # 本 Tick 全局进攻计划：敌方战斗单位簇
+        self._combat_assigned = {}    # uid -> {ci, slot, enemy} 进攻分配
+        self._engaged_clusters = set()  # 已聚齐、正式进攻的簇标识(敌方uid集合)
         self._revisit_goal = None     # 当前回访目标
         self._revisit_since = 0
         self._last_prune = 0
@@ -683,6 +686,10 @@ class HeuristicStrategy(Strategy):
         self._attack_point = None if vault_now or defense \
             else self._pick_attack_point(obs, core_pos, visible_enemies,
                                          visible_cores)
+        # 全局进攻计划（按敌方人数2倍精确调配 + 包围式进攻）：
+        # 仅在进攻模式(非躲藏/非防御)下构建；防御/劣势时清空并退回守家。
+        if not vault_now and not defense:
+            self._plan_combat(obs, core_pos, threat)
 
         # 巡逻 Ranger 分配：永久守家 Ranger 优先，再补到两个近家巡逻位。
         rangers = sorted([u["uid"] for u in obs.units if u["utype"] == "RANGER"])
@@ -1761,32 +1768,39 @@ class HeuristicStrategy(Strategy):
         if uid in self._home_vanguards:
             return self._vault_hold(
                 u, obs, core_pos, HOME_VANGUARD_RADII, "home_vanguard")
-        # 战斗目标（带认领：可见上限 2 / 记忆上限 1，防全员扑同一目标）
-        target, mem_key = self._select_combat_target(pos, enemies,
-                                                     enemy_cores, obs)
-        if target and mem_key is not None:
-            if self._dist(pos, target) <= 1:
-                # 已到达记忆位置且无敌人 → 立即遗忘（防追丢后横跳）
-                self._forget_enemy(mem_key)
-                self._pursuing.pop(uid, None)
-                target = None
-            else:
-                self._pursuing[uid] = (mem_key, obs.tick)
-        elif uid in self._pursuing:
-            self._pursuing.pop(uid, None)   # 可见目标：正常战斗，清除追击状态
-        if target:
-            d = self._dist(pos, target)
-            if d == 1:
-                self._dbg(uid, "sweep", target)
-                return ("SWEEP", {"direction": dir_name(target[0] - pos[0],
-                                                        target[1] - pos[1])})
-        # 进攻：已认领的可见/记忆目标（兵力占优才出击）
-        if target and threat <= g["army_trigger"] * 1.5:
-            step = self.pf.next_step(pos, target)
-            if step:
-                self._dbg(uid, "attack", target)
-                return ("MOVE", {"direction": dir_name(step[0] - pos[0],
-                                                       step[1] - pos[1])})
+        # 全局进攻计划（按敌方人数2倍调配 + 包围）：被分配到某簇则按聚齐
+        # 状态机动包围或正式进攻；未分配单位在计划激活时不追击(避免多打一)。
+        pa = self._combat_plan_action(u, obs, core_pos, enemies,
+                                      enemy_cores, "VANGUARD")
+        if pa is not None:
+            return pa
+        # 无进攻计划（无可见敌方集群）时才走旧追击逻辑兜底
+        if not self._combat_clusters:
+            target, mem_key = self._select_combat_target(pos, enemies,
+                                                         enemy_cores, obs)
+            if target and mem_key is not None:
+                if self._dist(pos, target) <= 1:
+                    # 已到达记忆位置且无敌人 → 立即遗忘（防追丢后横跳）
+                    self._forget_enemy(mem_key)
+                    self._pursuing.pop(uid, None)
+                    target = None
+                else:
+                    self._pursuing[uid] = (mem_key, obs.tick)
+            elif uid in self._pursuing:
+                self._pursuing.pop(uid, None)   # 可见目标：正常战斗，清除追击状态
+            if target:
+                d = self._dist(pos, target)
+                if d == 1:
+                    self._dbg(uid, "sweep", target)
+                    return ("SWEEP", {"direction": dir_name(target[0] - pos[0],
+                                                            target[1] - pos[1])})
+            # 进攻：已认领的可见/记忆目标（兵力占优才出击）
+            if target and threat <= g["army_trigger"] * 1.5:
+                step = self.pf.next_step(pos, target)
+                if step:
+                    self._dbg(uid, "attack", target)
+                    return ("MOVE", {"direction": dir_name(step[0] - pos[0],
+                                                           step[1] - pos[1])})
         # 突袭确认静止的敌方 Core（Drew-Z：strike group，守卫留守）
         if self._raid_point and u["uid"] not in self._raid_guards:
             d = self._dist(pos, self._raid_point)
@@ -1867,6 +1881,12 @@ class HeuristicStrategy(Strategy):
                 self._dbg(uid, "ranger_disengage", escape)
                 return ("MOVE", {"direction": dir_name(
                     escape[0] - pos[0], escape[1] - pos[1])})
+        # 全局进攻计划（按敌方人数2倍调配 + 包围）：被分配到某簇则按聚齐
+        # 状态机动包围或正式进攻；未分配单位在计划激活时不射击/不追击。
+        pa = self._combat_plan_action(u, obs, core_pos, enemies,
+                                      enemy_cores, "RANGER")
+        if pa is not None:
+            return pa
         # An unsupported 2 HP Ranger should not accept a stationary ranged
         # trade far from the squad.  Step out of the firing line, then re-engage
         # once support arrives or the enemy follows into a worse position.
@@ -1886,8 +1906,11 @@ class HeuristicStrategy(Strategy):
                 self._dbg(uid, "ranger_disengage", escape)
                 return ("MOVE", {"direction": dir_name(
                     escape[0] - pos[0], escape[1] - pos[1])})
-        # 射击优先：视野内可射击目标（含预判移动目标），任何 Ranger 都先打
-        shot = self._best_shot(u, pos, enemies, enemy_cores)
+        # 射击优先：视野内可射击目标（含预判移动目标）。进攻计划激活且本
+        # 单位未被分配 → 不自由射击(交由计划统一调度，避免多打一/乱开火)。
+        # （被分配到计划的 Ranger 已在上方 _combat_plan_action 提前返回）
+        shot = self._best_shot(u, pos, enemies, enemy_cores) \
+            if not self._combat_clusters else None
         if shot:
             # 角落堵死：目标被障碍困住（出口≤2）且一直在动（贴墙来回）
             # → 射必空（结算晚于移动，方向每 tick 变）；改为先走到目标
@@ -2024,8 +2047,10 @@ class HeuristicStrategy(Strategy):
                 return ("MOVE", {"direction": dir_name(step[0] - pos[0],
                                                        step[1] - pos[1])})
         # 跟踪敌人保持视线（带认领：可见上限 2 / 记忆上限 1，防全员扑同一目标）
-        tracking, mem_key = self._select_combat_target(pos, enemies,
-                                                       enemy_cores, obs)
+        # 进攻计划激活且本单位未被分配 → 不追击(交由计划统一调度)。
+        tracking, mem_key = (self._select_combat_target(pos, enemies,
+                                                     enemy_cores, obs)
+                              if not self._combat_clusters else (None, None))
         if tracking and mem_key is not None:
             if self._dist(pos, tracking) <= 1:
                 # 已到达记忆位置且无敌人 → 立即遗忘（防追丢后横跳）
@@ -2376,6 +2401,214 @@ class HeuristicStrategy(Strategy):
         if best is None:
             return None
         return best
+
+    # ------------------------------------------------------------------
+    # 全局进攻计划：按敌方人数2倍精确调配 + 包围式进攻
+    # ------------------------------------------------------------------
+    def _plan_combat(self, obs, core_pos, threat):
+        """每 Tick 构建一次全局进攻计划（仅在进攻模式调用）。
+
+        规则（用户要求）：
+        - 把视野内敌方战斗单位按距离聚类成簇；
+        - 每簇 N 个敌人 → 派遣 2N 个我方战斗单位（优先 1先锋+1游侠配对，
+          二打一），不出现多打一人挤人的情况；
+        - 2N 个单位先机动到簇周围「上下左右」包围环上的槽位；
+        - 只有聚齐(2N 全部到位)才正式发起进攻(SWEEP/SHOOT)，未聚齐只包围
+          不接战；兵力不足 2N 倍 → 该簇不接战(不器械少打多)。
+        """
+        self._combat_clusters = []
+        self._combat_assigned = {}
+        pos_by_uid = {u["uid"]: tuple(u["pos"]) for u in obs.units}
+        # 全局劣势/无敌人：清空已交战簇，退回守家
+        enemies = [e for e in getattr(obs, "enemies", [])
+                   if e["utype"] in ("VANGUARD", "RANGER")]
+        if core_pos is None or threat > self.genes["army_trigger"] * 1.5 \
+                or not enemies:
+            self._engaged_clusters = set()
+            return
+
+        # ---- 聚类：距离阈值内归并 ----
+        CLUSTER_DIST = 9
+        pts = [(tuple(e["pos"]), e["uid"], e["utype"]) for e in enemies]
+        parent = list(range(len(pts)))
+
+        def _find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        for i in range(len(pts)):
+            for j in range(i + 1, len(pts)):
+                if self._dist(pts[i][0], pts[j][0]) <= CLUSTER_DIST:
+                    ra, rb = _find(i), _find(j)
+                    if ra != rb:
+                        parent[ra] = rb
+        groups = {}
+        for i in range(len(pts)):
+            groups.setdefault(_find(i), []).append(pts[i])
+
+        clusters = []
+        for members in groups.values():
+            E = len(members)
+            cx = sum(m[0][0] for m in members) / E
+            cy = sum(m[0][1] for m in members) / E
+            center = (round(cx), round(cy))
+            maxd = max(self._dist(m[0], center) for m in members)
+            sr = max(3, int(maxd) + 2)          # 包围外环半径
+            clusters.append({
+                "key": frozenset(m[1] for m in members),
+                "center": center, "enemies": members, "E": E,
+                "required": 2 * E, "slots": [], "engaged": False,
+                "skip": False,
+            })
+
+        # ---- 候选我方战斗单位（排除守家 reserved）----
+        cand = [u for u in obs.units
+                if u["utype"] in ("VANGUARD", "RANGER")
+                and u["uid"] not in self._home_guards]
+        if not cand:
+            self._engaged_clusters = set()
+            return
+
+        used = set()
+        for c in clusters:
+            E = c["E"]
+            required = c["required"]
+            avail = sorted(
+                (u for u in cand if u["uid"] not in used),
+                key=lambda u: self._dist(u["pos"], c["center"]))
+            if len(avail) < required:
+                c["skip"] = True          # 兵力不足 2 倍 → 不接战
+                continue
+            chosen = avail[:required]
+            for u in chosen:
+                used.add(u["uid"])
+            # 包围槽位：required 个点在 center 周围半径 sr 的环上均匀分布
+            # （含上下左右等方向 → 形成包围）
+            slots = []
+            for k in range(required):
+                ang = k * 2 * math.pi / required
+                ox = round(sr * math.cos(ang))
+                oy = round(sr * math.sin(ang))
+                slots.append((c["center"][0] + ox, c["center"][1] + oy))
+            c["slots"] = slots
+            # 配对：每敌方单位配 (1 先锋 + 1 游侠)；不足补其他兵种(仍2人)
+            vangs = [u["uid"] for u in chosen if u["utype"] == "VANGUARD"]
+            rangs = [u["uid"] for u in chosen if u["utype"] == "RANGER"]
+            others = [u["uid"] for u in chosen
+                      if u["utype"] not in ("VANGUARD", "RANGER")]
+            vi = ri = oi = 0
+            # 槽位按 uid 稳定分配(不按距离排名)，避免单位收拢时槽位被重排
+            # 导致互相 chase 永远聚不齐。给定簇稳定时同一单位恒占同一槽位。
+            chosen_stable = sorted(chosen, key=lambda u: self._uid_num(u["uid"]))
+            slot_by_uid = {u["uid"]: slots[k]
+                           for k, u in enumerate(chosen_stable)}
+            for m in members:                      # 每个敌人配 2 人
+                a1 = a2 = None
+                if vi < len(vangs):
+                    a1 = vangs[vi]; vi += 1
+                elif oi < len(others):
+                    a1 = others[oi]; oi += 1
+                elif ri < len(rangs):
+                    a1 = rangs[ri]; ri += 1
+                if ri < len(rangs):
+                    a2 = rangs[ri]; ri += 1
+                elif oi < len(others):
+                    a2 = others[oi]; oi += 1
+                elif vi < len(vangs):
+                    a2 = vangs[vi]; vi += 1
+                for uid in (a1, a2):
+                    if uid is None:
+                        continue
+                    self._combat_assigned[uid] = {
+                        "ci": None, "slot": slot_by_uid[uid],
+                        "enemy": tuple(m[0]),
+                    }
+            c["assigned_uids"] = [u["uid"] for u in chosen]
+
+        # 记录 ci + 反查 slot 所属簇，便于到位判定
+        slot_to_ci = {}
+        for ci, c in enumerate(clusters):
+            c["ci"] = ci
+            for s in c["slots"]:
+                slot_to_ci[s] = ci
+        for uid, a in self._combat_assigned.items():
+            a["ci"] = slot_to_ci.get(a["slot"])
+
+        # ---- 聚齐判定：2N 全部到位(≤1) → 正式进攻（一旦聚齐即锁存）----
+        live_assigned = set(pos_by_uid) & set(self._combat_assigned)
+        for c in clusters:
+            if c.get("skip"):
+                self._engaged_clusters.discard(c["key"])
+                continue
+            arrived = sum(
+                1 for uid in c.get("assigned_uids", [])
+                if uid in live_assigned
+                and self._dist(pos_by_uid[uid],
+                               self._combat_assigned[uid]["slot"]) <= 1)
+            if c["key"] in self._engaged_clusters:
+                c["engaged"] = True            # 已锁存：继续进攻
+            elif arrived >= c["required"]:
+                c["engaged"] = True
+                self._engaged_clusters.add(c["key"])
+            else:
+                c["engaged"] = False
+                self._engaged_clusters.discard(c["key"])
+            # 分配单位全灭 → 解除锁存
+            if not any(uid in live_assigned
+                       for uid in c.get("assigned_uids", [])):
+                self._engaged_clusters.discard(c["key"])
+
+        self._combat_clusters = clusters
+        # 进攻目标点(兼容 block/raid 旧逻辑) = 最近未跳过簇中心
+        active = [c["center"] for c in clusters if not c.get("skip")]
+        if active:
+            self._attack_point = min(
+                active, key=lambda p: self._dist(p, core_pos))
+
+    def _combat_plan_action(self, u, obs, core_pos, enemies, enemy_cores, role):
+        """被分配到进攻计划的单位：返回其本 Tick 行动；未分配返回 None。"""
+        a = self._combat_assigned.get(u["uid"])
+        if a is None:
+            return None
+        pos = tuple(u["pos"])
+        # 防御/劣势下计划已清空，走兜底逻辑
+        if not self._combat_clusters:
+            return None
+        cluster = self._combat_clusters[a["ci"]] if a["ci"] is not None \
+            and a["ci"] < len(self._combat_clusters) else None
+        if cluster is None:
+            return None
+        slot = a["slot"]
+        ep = a["enemy"]
+        if not cluster["engaged"]:
+            # 机动包围：走向分配槽位；到位则待命(不提前进攻)
+            if self._dist(pos, slot) <= 1:
+                return None
+            step = self.pf.next_step(pos, slot)
+            if step:
+                return ("MOVE", {"direction": dir_name(
+                    step[0] - pos[0], step[1] - pos[1])})
+            return None
+        # 正式进攻：打分配到的敌方单位（二打一）
+        if role == "VANGUARD":
+            if self._dist(pos, ep) == 1:
+                return ("SWEEP", {"direction": dir_name(
+                    ep[0] - pos[0], ep[1] - pos[1])})
+            step = self.pf.next_step(pos, ep)
+            if step:
+                return ("MOVE", {"direction": dir_name(
+                    step[0] - pos[0], step[1] - pos[1])})
+            return None
+        # RANGER
+        if self._shot_valid(u, pos, ep):
+            return ("SHOOT", {"expected_cell": list(ep)})
+        step = self.pf.next_step(pos, ep)
+        if step:
+            return ("MOVE", {"direction": dir_name(
+                step[0] - pos[0], step[1] - pos[1])})
+        return None
 
     def _block_point(self, enemy_pos, core_pos):
         """堵路点：敌人与 Core 连线上、距敌人 2 格的格。"""

@@ -181,6 +181,7 @@
         <span><i style="background:#39d98a"></i>资源(绿)</span>
         <span><i style="background:#ff4d5e"></i>敌方(红)</span>
         <span><i style="background:#ff9628"></i>消失点(橙·兵种形)</span>
+        <span><svg width="18" height="18" viewBox="0 0 20 20"><path d="M10,2 L11.8,7.5 L17.6,7.5 L12.9,10.9 L14.7,16.5 L10,13 L5.3,16.5 L7.1,10.9 L2.4,7.5 L8.2,7.5 Z" fill="#ff4d5e" stroke="#fff" stroke-width="1"/></svg>敌核心(红★)</span>
         <span><i style="background:rgba(255,150,40,0.4)"></i>疑似敌核心</span>
       </div>
       <div class="sec sec-units">
@@ -595,6 +596,8 @@ function draw(){
     ctx.fillStyle="#3a2a00"; ctx.font="bold 11px sans-serif"; ctx.textAlign="center"; ctx.fillText("B",bx,by+4); }
   // 敌方单位：红，按兵种画外形（worker圆/vanguard方/ranger三角）
   t.enemies.forEach(e=>{ const x=sx(e.pos[0])+v/2,y=sy(e.pos[1])+v/2;
+    // 敌方核心(type=ENEMY_CORE)画红色五角星，而非落入默认圆形分支
+    if((e.type||"").toUpperCase()==="ENEMY_CORE"){ drawCoreStar(x,y,v,"#ff4d5e","#fff"); return; }
     drawUnitShape(x, y, v, e.type, ENEMY_COLOR, "#fff"); });
   // 我方单位终点目标：队色虚线连接单位→目标格 + 目标格队色方向箭头（开关 showTargets）
   if(document.getElementById("showTargets").checked){
