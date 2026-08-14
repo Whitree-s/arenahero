@@ -129,6 +129,9 @@ GENES = [
     ("park_radius",         3.0,  2.0, 8.0),   # idle 战斗单位驻留环带半径
     ("park_spread_w",       1.0,  0.0, 5.0),   # 驻留点偏离偏好半径的惩罚权重
     ("park_traffic_w",      2.0,  0.0, 10.0),  # Core 四邻（Worker 交通）惩罚权重
+    # ---- v5 新增：idle 探索范围（网页实时可调，见 live_params.py）----
+    ("idle_explore_radius", 15.0, 0.0,  60.0),  # 空闲战斗单位探索离 Core 上限（0=只巡逻不远征）
+    ("scout_search_limit",  40.0, 10.0, 80.0),  # _nearest_unvisited 搜索半径（探索彻底度）
 ]
 
 
@@ -1744,8 +1747,8 @@ class HeuristicStrategy(Strategy):
             explore = eg[0]
         else:
             self._explore_goal.pop(uid, None)
-            explore = self._nearest_unvisited(pos, limit=40)
-            if explore and core_pos and self._dist(explore, core_pos) > 15:
+            explore = self._nearest_unvisited(pos, limit=int(g["scout_search_limit"]))
+            if explore and core_pos and self._dist(explore, core_pos) > g["idle_explore_radius"]:
                 explore = None
             if explore:
                 self._explore_goal[uid] = (explore, obs.tick)
@@ -1995,7 +1998,7 @@ class HeuristicStrategy(Strategy):
         # 自动放宽（Core 周围早已探索完，固定限距会让探索永不触发）；
         # 模拟器短局面积小 → 近探索（保持模拟器高效行为）
         area_r = int((len(self.mem.area_seen) / 2) ** 0.5) if self.mem.area_seen else 10
-        max_explore = max(15, min(60, area_r + 10))
+        max_explore = min(60, max(int(g["idle_explore_radius"]), area_r + 10))
         # 方向扇区探索（视野不重合）：uid 模 8 定方向，从扇区锚点（12 格
         # 外）BFS 找最近未访问格——每个 Ranger 探索自己方向的区域，天然
         # 分散（去重竞争会让 Ranger 放弃探索，模拟器 -3~-5；扇区无竞争）

@@ -27,6 +27,7 @@ sys.path.insert(0, EVOLVE_DIR)
 from deploy import LiveAdapter, load_genes          # noqa: E402
 from strategies.heuristic import HeuristicStrategy   # noqa: E402
 from bridge_stream import StreamWriter               # noqa: E402
+from live_params import apply_to_genes               # noqa: E402
 
 GENES_DEFAULT = os.path.join(EVOLVE_DIR, "genes", "evolve_v7_best.json")
 
@@ -63,6 +64,8 @@ def run_online(api_key, genes, stream_dir="stream", tick_limit=None, verbose=Fal
                     obs = adapter.build_observation(turn)
                     plan = None
                     try:
+                        # 实时调参热覆盖（地图网页滑块 → stream/live_params.json）
+                        apply_to_genes(strat, "new")
                         plan = strat.decide(obs)
                         adapter.apply_plan(turn, plan)
                         t_sub = time.time()
@@ -121,6 +124,7 @@ def run_local(genes, stream_dir="stream", ticks=200, seed=42, players=8,
     for _ in range(ticks):
         g.tick += 1
         g.step()
+        apply_to_genes(me.inner, "new")  # 离线试运行也支持实时调参
         p = g.players[0]
         if p.core is None and not p.units:
             continue

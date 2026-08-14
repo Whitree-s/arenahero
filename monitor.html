@@ -147,6 +147,15 @@
         <span><svg width="18" height="18" viewBox="0 0 20 20"><path d="M10,2 L11.8,7.5 L17.6,7.5 L12.9,10.9 L14.7,16.5 L10,13 L5.3,16.5 L7.1,10.9 L2.4,7.5 L8.2,7.5 Z" fill="#4cc2ff" stroke="#fff" stroke-width="1"/></svg>核心</span>
       </div>
       <div class="sec sec-note hint">滚轮缩放 · 适配=自动取景 · 绿◆=记忆资源(离开视野仍锁定派遣) · 绿●=当前视野资源 · 橙图标=敌方消失点(按兵种) · 单位上方小字=决策标签(arena-evolve 每 tick 决策的 branch)</div>
+      <div class="sec" id="liveParamsSec">
+        <div class="row" style="justify-content:space-between;align-items:center;margin-top:4px">
+          <b style="font-size:12px;color:var(--muted);letter-spacing:.5px">实时调参（新决策）</b>
+          <button id="lpReset" class="ghost" style="font-size:11px;padding:2px 8px">恢复默认</button>
+        </div>
+        <div class="hint" style="font-size:11px;line-height:1.6">滑块下一 tick 即时生效，无需重启 agent</div>
+        <div id="lpSliders" style="display:flex;flex-direction:column;gap:9px;margin-top:2px"></div>
+        <div class="hint" id="lpStatus" style="font-size:11px;color:var(--muted)"></div>
+      </div>
     </div>
 
     <!-- 单位状态面板：工人/先锋/游侠计数 + 下一步生产 -->
@@ -824,6 +833,86 @@ document.getElementById("file").onchange=e=>{
   r.readAsText(f);
 };
 
+// ===== 实时调参（新决策）：地图网页滑块 → /api/params → stream/live_params.json =====
+// 滑块基线(def)与 evolve_v7_best.json 部署值一致；"恢复默认"即清回该基线。
+const LP_CONFIG = [
+  {key:"worker_ratio",       label:"探索单位占比(工人)", min:0.10, max:0.90, step:0.01, def:0.5463523563273454, unit:""},
+  {key:"patrol_radius",       label:"战斗单位活动半径",  min:3,    max:12,   step:0.5,  def:7.5,               unit:"格"},
+  {key:"idle_explore_radius", label:"探索距离上限",      min:0,    max:60,   step:1,    def:15,                unit:"格"},
+  {key:"scout_search_limit",  label:"探索搜索半径",      min:10,   max:80,   step:1,    def:40,                unit:"格"},
+  {key:"revisit_ticks",       label:"重复探索周期",      min:40,   max:400,  step:1,    def:243.23470250665162, unit:"t"},
+  {key:"beacon_go_range",     label:"主动远征触发距离",  min:5,    max:45,   step:0.5,  def:15.172532787271086, unit:"格"},
+  {key:"defense_radius",      label:"防御敏感度",        min:4,    max:20,   step:0.5,  def:11.0797481548136,   unit:"格"},
+];
+
+function _lpFmt(c, v){
+  const n = parseFloat(v);
+  const s = c.step < 1 ? n.toFixed(2) : String(Math.round(n));
+  return s + (c.unit ? (" " + c.unit) : "");
+}
+
+function buildLiveParams(){
+  const box = document.getElementById("lpSliders");
+  box.innerHTML = "";
+  LP_CONFIG.forEach(c=>{
+    const row = document.createElement("div");
+    row.style.cssText = "display:grid;grid-template-columns:1fr auto;gap:2px 8px;align-items:center;";
+    const lab = document.createElement("label");
+    lab.style.cssText = "font-size:12px;grid-column:1/3;display:flex;justify-content:space-between;gap:8px;cursor:pointer;";
+    const name = document.createElement("span"); name.textContent = c.label;
+    const val = document.createElement("span");
+    val.style.cssText = "color:var(--muted);font-variant-numeric:tabular-nums;";
+    lab.appendChild(name); lab.appendChild(val);
+    const inp = document.createElement("input");
+    inp.type = "range"; inp.min = c.min; inp.max = c.max; inp.step = c.step; inp.value = c.def;
+    inp.style.cssText = "grid-column:1/3;width:100%;";
+    inp.dataset.key = c.key;
+    row.appendChild(lab); row.appendChild(inp); box.appendChild(row);
+    val.textContent = _lpFmt(c, c.def);
+    inp.addEventListener("input", ()=>{ val.textContent = _lpFmt(c, inp.value); schedulePushLiveParams(); });
+    c._inp = inp; c._val = val;
+  });
+}
+
+let _lpTimer = null;
+function schedulePushLiveParams(){
+  clearTimeout(_lpTimer);
+  _lpTimer = setTimeout(pushLiveParams, 250);  // 防抖：避免每像素一请求
+}
+function pushLiveParams(){
+  const data = {new:{}};
+  LP_CONFIG.forEach(c=>{ data.new[c.key] = parseFloat(c._inp.value); });
+  fetch(ah_url("/api/params"), {
+    method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(data)
+  })
+    .then(r=> r.ok ? r.json() : Promise.reject(new Error("HTTP "+r.status)))
+    .then(()=>{ document.getElementById("lpStatus").textContent = "已应用 ✓"; })
+    .catch(e=>{ document.getElementById("lpStatus").textContent = "发送失败：" + e.message; });
+}
+function loadLiveParams(){
+  fetch(ah_url("stream/live_params.json") + "?_=" + Date.now())
+    .then(r=> r.ok ? r.json() : null)
+    .then(j=>{
+      if(!j || !j.new) return;
+      LP_CONFIG.forEach(c=>{
+        const v = j.new[c.key];
+        if(v !== undefined){ c._inp.value = v; c._val.textContent = _lpFmt(c, v); }
+      });
+    })
+    .catch(()=>{});
+}
+document.getElementById("lpReset").addEventListener("click", ()=>{
+  const data = {new:{}};
+  LP_CONFIG.forEach(c=>{ c._inp.value = c.def; c._val.textContent = _lpFmt(c, c.def); data.new[c.key] = c.def; });
+  fetch(ah_url("/api/params"), {
+    method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(data)
+  })
+    .then(()=>{ document.getElementById("lpStatus").textContent = "已恢复默认 ✓"; })
+    .catch(e=>{ document.getElementById("lpStatus").textContent = "发送失败：" + e.message; });
+});
+
+buildLiveParams();
+loadLiveParams();
 buildFilters();
 fitCanvas();
 poll();
